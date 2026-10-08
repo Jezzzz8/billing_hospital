@@ -290,7 +290,7 @@ $chargeCategories = $controller->getChargeCategories();
             this.textContent = 'Working…';
 
             try {
-                const res = await axios.post(`${baseUrl}/api/departments/toggle-active.php?id=${id}`);
+                const res = await axios.post(`${baseUrl}/api/admin.php?resource=departments&operation=toggle-active&id=${id}`);
                 if (res.data.success) {
                     showAlert('success', res.data.message);
                     setTimeout(() => location.reload(), 700);
@@ -325,8 +325,8 @@ $chargeCategories = $controller->getChargeCategories();
 
         try {
             const url = id
-                ? `${baseUrl}/api/departments/update.php?id=${id}`
-                : `${baseUrl}/api/departments/create.php`;
+                ? `${baseUrl}/api/admin.php?resource=departments&operation=update&id=${id}`
+                : `${baseUrl}/api/admin.php?resource=departments&operation=create`;
             const res = await axios.post(url, payload, {
                 headers: { 'Content-Type': 'application/json' }
             });

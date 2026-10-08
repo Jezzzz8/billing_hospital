@@ -18,13 +18,26 @@ const MASTER_PAGES = {
     'building':         { resource: 'buildings',          singular: 'building',       hasActive: false },
     'floor-level':      { resource: 'floor-levels',       singular: 'floorLevel',     hasActive: false },
     'room-type':        { resource: 'room-types',         singular: 'roomType',       hasActive: true  },
-    'room':             { resource: 'rooms',              singular: 'room',           hasActive: true  },
 
     'doctors':          { resource: 'doctors',            singular: 'doctor',         hasActive: true  },
 };
 
-function mountCurrentMasterPage() {
-    const page = document.body.dataset.page || '';
+async function mountCurrentMasterPage(event) {
+    const page = event.detail.page || document.body.dataset.page || '';
+
+    if (page === 'room') {
+        try {
+            const baseUrl = document.body.dataset.baseUrl || '';
+            const mod = await import(baseUrl + '/assets/js/room.js');
+            if (typeof mod.initRoomPage === 'function') {
+                await mod.initRoomPage(event);
+            }
+        } catch (error) {
+            console.error('[master.js] Could not init room module:', error);
+        }
+        return;
+    }
+
     const cfg = MASTER_PAGES[page];
     if (!cfg) return;
     mountAdminMasterPage(cfg);

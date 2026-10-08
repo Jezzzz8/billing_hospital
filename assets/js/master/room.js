@@ -1,8 +1,8 @@
-
-document.addEventListener("spa:page-loaded", async (event) => {
-  if (event.detail.page !== "room") return;
+async function initRoomPage(event) {
   const baseUrl = document.body.dataset.baseUrl || "";
+  const signal = event?.detail?.signal || new AbortController().signal;
   const alertBox = document.getElementById("alert");
+  if (!alertBox) return;
 
   const modal = document.getElementById("roomModal");
   const form = document.getElementById("roomForm");
@@ -21,38 +21,55 @@ document.addEventListener("spa:page-loaded", async (event) => {
   const confirmDeleteBtn = document.getElementById("confirmDeleteBtn");
   const confirmDeleteLbl = document.getElementById("confirmDeleteLabel");
 
-  const buildingSelect = document.getElementById("building_id");
   const floorLevelSelect = document.getElementById("floor_level_id");
 
   const holder = document.getElementById("roomsData");
   let FLOOR_LEVELS = [];
+
   if (holder) {
+    const raw = holder.dataset.floorLevels || holder.getAttribute("data-floor-levels") || "[]";
     try {
-      FLOOR_LEVELS = JSON.parse(holder.dataset.floorLevels || "[]");
+      FLOOR_LEVELS = JSON.parse(raw);
     } catch (e) {
-      console.error(e);
+      console.error("[room.js] Failed to parse floor levels:", raw, e);
     }
   }
 
   function populateFloorLevels(buildingId, selectedFloorId = null) {
     if (!floorLevelSelect) return;
+
     floorLevelSelect.innerHTML = '<option value="">— Select floor level —</option>';
+
     if (!buildingId) return;
 
-    FLOOR_LEVELS.filter((fl) => fl.building_id == buildingId).forEach((fl) => {
+    const target = String(buildingId);
+    const matches = FLOOR_LEVELS.filter((fl) => String(fl.building_id) === target);
+
+    if (matches.length === 0) {
       const opt = document.createElement("option");
-      opt.value = fl.floor_level_id;
+      opt.value = "";
+      opt.disabled = true;
+      opt.textContent = "No floor levels for this building";
+      floorLevelSelect.appendChild(opt);
+      return;
+    }
+
+    matches.forEach((fl) => {
+      const opt = document.createElement("option");
+      opt.value = String(fl.floor_level_id);
       opt.textContent = "Floor " + fl.floor_level_name;
-      if (selectedFloorId && fl.floor_level_id == selectedFloorId) opt.selected = true;
+      if (selectedFloorId && String(fl.floor_level_id) === String(selectedFloorId)) {
+        opt.selected = true;
+      }
       floorLevelSelect.appendChild(opt);
     });
   }
 
-  if (buildingSelect) {
-    buildingSelect.addEventListener("change", function () {
-      populateFloorLevels(this.value);
-    });
-  }
+  document.addEventListener("change", (e) => {
+    if (e.target && e.target.id === "building_id") {
+      populateFloorLevels(e.target.value);
+    }
+  }, { signal });
 
   const showAlert = (msg, type = "error") => {
     const styles = {
@@ -83,13 +100,13 @@ document.addEventListener("spa:page-loaded", async (event) => {
   const closeModal = (el) => el.classList.add("hidden");
 
   document.querySelectorAll("[data-close-modal]").forEach((el) => {
-    el.addEventListener("click", () => closeModal(modal));
+    el.addEventListener("click", () => closeModal(modal), { signal });
   });
   document.querySelectorAll("[data-close-confirm]").forEach((el) => {
-    el.addEventListener("click", () => closeModal(confirmModal));
+    el.addEventListener("click", () => closeModal(confirmModal), { signal });
   });
   document.querySelectorAll("[data-close-delete]").forEach((el) => {
-    el.addEventListener("click", () => closeModal(deleteModal));
+    el.addEventListener("click", () => closeModal(deleteModal), { signal });
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -97,7 +114,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
       closeModal(confirmModal);
       closeModal(deleteModal);
     }
-  }, { signal: event.detail.signal });
+  }, { signal });
 
   if (openCreate) {
     openCreate.addEventListener("click", () => {
@@ -108,7 +125,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
       modalTitle.textContent = "New Room";
       submitLbl.textContent = "Create Room";
       openModal(modal);
-    });
+    }, { signal });
   }
 
   document.querySelectorAll(".edit-btn").forEach((btn) => {
@@ -126,10 +143,11 @@ document.addEventListener("spa:page-loaded", async (event) => {
       document.getElementById("room_type_id").value = r.room_type_id;
       document.getElementById("status_id").value = r.status_id;
       document.getElementById("building_id").value = r.building_id || "";
+
       populateFloorLevels(r.building_id, r.floor_level_id);
 
       openModal(modal);
-    });
+    }, { signal });
   });
 
   form.addEventListener("submit", async (e) => {
@@ -178,14 +196,14 @@ document.addEventListener("spa:page-loaded", async (event) => {
       submitBtn.disabled = false;
       submitLbl.textContent = isEdit ? "Save Changes" : "Create Room";
     }
-  });
+  }, { signal });
 
   document.querySelectorAll(".deactivate-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       confirmRoomNumber.textContent = btn.dataset.roomNumber || "this room";
       confirmDeactivateBtn.dataset.roomId = btn.dataset.roomId;
       openModal(confirmModal);
-    });
+    }, { signal });
   });
 
   if (confirmDeactivateBtn) {
@@ -200,10 +218,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
         const { data } = await axios.post(
           `${baseUrl}/api/admin.php?resource=rooms&operation=toggle-active&id=${id}`,
           {},
-          {
-            headers: { "Content-Type": "application/json" },
-            withCredentials: true,
-          },
+          { headers: { "Content-Type": "application/json" }, withCredentials: true }
         );
 
         if (data.success) {
@@ -221,7 +236,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
         confirmDeactivateBtn.disabled = false;
         confirmDeactivateLbl.textContent = "Archive Room";
       }
-    });
+    }, { signal });
   }
 
   document.querySelectorAll(".reactivate-btn").forEach((btn) => {
@@ -235,10 +250,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
         const { data } = await axios.post(
           `${baseUrl}/api/admin.php?resource=rooms&operation=toggle-active&id=${id}`,
           {},
-          {
-            headers: { "Content-Type": "application/json" },
-            withCredentials: true,
-          },
+          { headers: { "Content-Type": "application/json" }, withCredentials: true }
         );
 
         if (data.success) {
@@ -252,7 +264,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
       } finally {
         btn.disabled = false;
       }
-    });
+    }, { signal });
   });
 
   let pendingDeleteId = null;
@@ -262,7 +274,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
       pendingDeleteId = btn.dataset.roomId;
       deleteRoomNumber.textContent = btn.dataset.roomNumber || "this room";
       openModal(deleteModal);
-    });
+    }, { signal });
   });
 
   if (confirmDeleteBtn) {
@@ -276,10 +288,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
         const { data } = await axios.post(
           `${baseUrl}/api/admin.php?resource=rooms&operation=delete&id=${pendingDeleteId}`,
           {},
-          {
-            headers: { "Content-Type": "application/json" },
-            withCredentials: true,
-          },
+          { headers: { "Content-Type": "application/json" }, withCredentials: true }
         );
 
         if (data.success) {
@@ -298,7 +307,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
         confirmDeleteLbl.textContent = "Yes, delete permanently";
         pendingDeleteId = null;
       }
-    });
+    }, { signal });
   }
 
   const searchInput = document.getElementById("filterSearch");
@@ -340,14 +349,14 @@ document.addEventListener("spa:page-loaded", async (event) => {
     }
   }
 
-  if (searchInput) searchInput.addEventListener("input", applyFilters);
-  if (showArchived) showArchived.addEventListener("change", applyFilters);
+  if (searchInput) searchInput.addEventListener("input", applyFilters, { signal });
+  if (showArchived) showArchived.addEventListener("change", applyFilters, { signal });
   if (filterClear) {
     filterClear.addEventListener("click", () => {
       searchInput.value = "";
       showArchived.checked = false;
       applyFilters();
-    });
+    }, { signal });
   }
 
   applyFilters();
@@ -357,4 +366,9 @@ document.addEventListener("spa:page-loaded", async (event) => {
     sessionStorage.removeItem("room_flash");
     showAlert(flash, "success");
   }
+}
+
+document.addEventListener("spa:page-loaded", (event) => {
+  if (event.detail.page !== "room") return;
+  initRoomPage(event);
 });

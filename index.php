@@ -167,6 +167,7 @@ $pageTitle = match ($page) {
     'department-requests'     => 'Department Requests',
     'department-queue'        => 'Request Queue',
     'department-fulfillment'  => 'Fulfillment',
+    'nurse-fulfillment-receipts' => 'Fulfillment Receipts',
     default                   => $pageTitle,
 };
 
