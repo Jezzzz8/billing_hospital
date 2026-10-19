@@ -1,0 +1,32 @@
+{
+  "name": "billing_hospital",
+  "version": "1.0.0",
+  "private": true,
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "vendor:axios": "node -e \"require('fs').mkdirSync('assets/js/vendor',{recursive:true});require('fs').copyFileSync('node_modules/axios/dist/axios.min.js','assets/js/vendor/axios.min.js')\"",
+    "postinstall": "npm run vendor:axios",
+    "tailwind:build": "tailwindcss -i ./assets/css/tailwind.css -o ./assets/css/app.css --minify",
+    "tailwind:watch": "tailwindcss -i ./assets/css/tailwind.css -o ./assets/css/app.css --watch"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jezzzz8/billing_hospital.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Jezzzz8/billing_hospital/issues"
+  },
+  "homepage": "https://github.com/Jezzzz8/billing_hospital#readme",
+  "dependencies": {
+    "axios": "^1.7.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}
