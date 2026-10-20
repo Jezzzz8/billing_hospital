@@ -226,7 +226,7 @@ $todayPaymentCount = (int)$pdo->query(
                 </div>
                 <div>
                     <label for="counterChargePrice" class="mb-1.5 block text-sm font-medium text-slate-700">Unit price (₱)</label>
-                    <input id="counterChargePrice" type="number" min="0" step="0.01" required class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm">
+                    <input id="counterChargePrice" type="text" inputmode="decimal" autocomplete="off" required class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm">
                 </div>
             </div>
             <div>
@@ -338,7 +338,7 @@ $todayPaymentCount = (int)$pdo->query(
                         Pay full balance
                     </button>
                 </div>
-                <input type="number" id="col_amount" required min="0.01" step="0.01"
+                <input type="text" id="col_amount" required inputmode="decimal" autocomplete="off"
                        class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-lg font-semibold
                               focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                 <p id="colAmountHint" class="mt-1 text-xs text-slate-500"></p>
@@ -463,16 +463,76 @@ $todayPaymentCount = (int)$pdo->query(
     let chargeStatementId = null;
     let paymentInFlight = false;
 
+    function parseCurrency(value) {
+        const normalized = String(value ?? '').replace(/,/g, '').trim();
+        return normalized === '' ? 0 : Number(normalized);
+    }
+
+    function formatCurrency(value) {
+        return (Number(value) || 0).toLocaleString('en-PH', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        });
+    }
+
+    function formatCurrencyInput(input) {
+        const start = input.selectionStart;
+        const beforeCaret = input.value.slice(0, start ?? input.value.length).replace(/,/g, '');
+        let raw = input.value.replace(/,/g, '').replace(/[^\d.]/g, '');
+        const decimalIndex = raw.indexOf('.');
+        if (decimalIndex !== -1) {
+            raw = raw.slice(0, decimalIndex + 1) + raw.slice(decimalIndex + 1).replace(/\./g, '').slice(0, 2);
+        }
+        const [integerPart, decimalPart] = raw.split('.');
+        const groupedInteger = (integerPart || '').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        const formatted = decimalIndex === -1
+            ? groupedInteger
+            : `${groupedInteger || '0'}.${decimalPart ?? ''}`;
+        input.value = formatted;
+
+        if (start !== null) {
+            const charactersBeforeCaret = beforeCaret.length;
+            let position = 0;
+            let counted = 0;
+            while (position < formatted.length && counted < charactersBeforeCaret) {
+                if (formatted[position] !== ',') counted++;
+                position++;
+            }
+            input.setSelectionRange(position, position);
+        }
+    }
+
+    function bindCurrencyInput(input) {
+        input.addEventListener('input', () => {
+            formatCurrencyInput(input);
+            if (input.id === 'col_amount') updateBalancePreview();
+        });
+        input.addEventListener('blur', () => {
+            const value = parseCurrency(input.value);
+            if (Number.isFinite(value) && input.value.trim() !== '') {
+                input.value = formatCurrency(value);
+            }
+        });
+        input.addEventListener('focus', () => {
+            input.value = input.value.replace(/,/g, '');
+        });
+    }
+
+    const chargePriceInput = document.getElementById('counterChargePrice');
+    const paymentAmountInput = document.getElementById('col_amount');
+    bindCurrencyInput(chargePriceInput);
+    bindCurrencyInput(paymentAmountInput);
+
     chargeItems.forEach(item => {
         const option = document.createElement('option');
         option.value = item.charge_item_id;
-        option.textContent = `${item.item_name} (₱${Number(item.default_price).toFixed(2)})`;
+        option.textContent = `${item.item_name} (₱${formatCurrency(item.default_price)})`;
         option.dataset.price = item.default_price;
         chargeItemSelect.appendChild(option);
     });
     chargeItemSelect.addEventListener('change', () => {
-        document.getElementById('counterChargePrice').value =
-            chargeItemSelect.selectedOptions[0]?.dataset.price || '';
+        const price = chargeItemSelect.selectedOptions[0]?.dataset.price;
+        chargePriceInput.value = price !== undefined ? formatCurrency(price) : '';
     });
 
     function showAlert(type, msg) {
@@ -557,20 +617,20 @@ $todayPaymentCount = (int)$pdo->query(
             document.getElementById('colStatement').textContent = '#' + s.statement_id;
             document.getElementById('colPatient').textContent = `${s.first_name} ${s.last_name}`;
             document.getElementById('colContact').textContent = s.contact_number || '—';
-            document.getElementById('colSubtotal').textContent = '₱' + Number(s.subtotal_amount).toFixed(2);
-            document.getElementById('colTax').textContent = '₱' + Number(s.tax_amount).toFixed(2);
-            document.getElementById('colPhilhealth').textContent = '₱' + Number(s.philhealth_deduction || 0).toFixed(2);
-            document.getElementById('colInsurance').textContent = '₱' + Number(s.insurance_coverage_amount || 0).toFixed(2);
-            document.getElementById('colHmo').textContent = '₱' + Number(s.hmo_discount || 0).toFixed(2);
-            document.getElementById('colGovernment').textContent = '₱' + Number(s.government_discount || 0).toFixed(2);
-            document.getElementById('colTotal').textContent = '₱' + Number(s.total_amount).toFixed(2);
-            document.getElementById('colPaid').textContent = '₱' + Number(s.amount_paid).toFixed(2);
-            document.getElementById('colBalance').textContent = '₱' + Number(s.balance_amount).toFixed(2);
-            document.getElementById('colBalanceBefore').textContent = '₱' + Number(s.balance_amount).toFixed(2);
-            document.getElementById('col_amount').max = Number(s.balance_amount).toFixed(2);
-            document.getElementById('col_amount').value = Number(s.balance_amount).toFixed(2);
+            document.getElementById('colSubtotal').textContent = '₱' + formatCurrency(s.subtotal_amount);
+            document.getElementById('colTax').textContent = '₱' + formatCurrency(s.tax_amount);
+            document.getElementById('colPhilhealth').textContent = '₱' + formatCurrency(s.philhealth_deduction || 0);
+            document.getElementById('colInsurance').textContent = '₱' + formatCurrency(s.insurance_coverage_amount || 0);
+            document.getElementById('colHmo').textContent = '₱' + formatCurrency(s.hmo_discount || 0);
+            document.getElementById('colGovernment').textContent = '₱' + formatCurrency(s.government_discount || 0);
+            document.getElementById('colTotal').textContent = '₱' + formatCurrency(s.total_amount);
+            document.getElementById('colPaid').textContent = '₱' + formatCurrency(s.amount_paid);
+            document.getElementById('colBalance').textContent = '₱' + formatCurrency(s.balance_amount);
+            document.getElementById('colBalanceBefore').textContent = '₱' + formatCurrency(s.balance_amount);
+            paymentAmountInput.dataset.maxBalance = Number(s.balance_amount).toFixed(2);
+            paymentAmountInput.value = formatCurrency(s.balance_amount);
             document.getElementById('colAmountHint').textContent =
-                'Maximum: ₱' + Number(s.balance_amount).toFixed(2);
+                'Maximum: ₱' + formatCurrency(s.balance_amount);
             updateBalancePreview();
         } catch (err) {
             showAlert('error', err.response?.data?.message || 'Could not load statement.');
@@ -582,20 +642,18 @@ $todayPaymentCount = (int)$pdo->query(
         const before = parseFloat(
             document.getElementById('colBalanceBefore').textContent.replace(/[^0-9.-]/g, '')
         ) || 0;
-        const amount = parseFloat(document.getElementById('col_amount').value) || 0;
+        const amount = parseCurrency(paymentAmountInput.value);
         const after = Math.max(0, before - amount);
 
-        document.getElementById('colThisPayment').textContent = '₱' + amount.toFixed(2);
-        document.getElementById('colBalanceAfter').textContent = '₱' + after.toFixed(2);
+        document.getElementById('colThisPayment').textContent = '₱' + formatCurrency(amount);
+        document.getElementById('colBalanceAfter').textContent = '₱' + formatCurrency(after);
     }
-
-    document.getElementById('col_amount')?.addEventListener('input', updateBalancePreview);
 
     document.getElementById('colFullBtn')?.addEventListener('click', () => {
         const balance = parseFloat(
             document.getElementById('colBalanceBefore').textContent.replace(/[^0-9.-]/g, '')
         ) || 0;
-        document.getElementById('col_amount').value = balance.toFixed(2);
+        paymentAmountInput.value = formatCurrency(balance);
         updateBalancePreview();
     });
 
@@ -621,7 +679,7 @@ $todayPaymentCount = (int)$pdo->query(
     document.getElementById('saveCounterCharge').addEventListener('click', async () => {
         const itemId = Number(chargeItemSelect.value);
         const quantity = Number(document.getElementById('counterChargeQuantity').value);
-        const price = Number(document.getElementById('counterChargePrice').value);
+        const price = parseCurrency(chargePriceInput.value);
         if (!chargeStatementId || itemId <= 0 || !Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(price) || price < 0) {
             showAlert('error', 'Select a charge item and enter a valid quantity and price.');
             return;
@@ -656,7 +714,7 @@ $todayPaymentCount = (int)$pdo->query(
         if (!currentStatementId) return;
 
         const typeId = document.getElementById('col_payment_type_id').value;
-        const amount = parseFloat(document.getElementById('col_amount').value) || 0;
+        const amount = parseCurrency(paymentAmountInput.value);
 
         if (!typeId) {
             showAlert('error', 'Please select a payment type.');
@@ -664,6 +722,11 @@ $todayPaymentCount = (int)$pdo->query(
         }
         if (amount <= 0) {
             showAlert('error', 'Please enter a valid amount.');
+            return;
+        }
+        const maxBalance = Number(paymentAmountInput.dataset.maxBalance || 0);
+        if (!Number.isFinite(amount) || amount > maxBalance) {
+            showAlert('error', 'Payment amount cannot exceed the remaining balance.');
             return;
         }
 
@@ -709,9 +772,9 @@ $todayPaymentCount = (int)$pdo->query(
             'Statement #' + statementId + ' · ' + (data.reference || '');
         document.getElementById('receiptReference').textContent = data.reference || '—';
         document.getElementById('receiptAmount').textContent =
-            '₱' + Number(data.amount_paid ? (data.amount_paid) : 0).toFixed(2);
+            '₱' + formatCurrency(data.amount_paid ? data.amount_paid : 0);
         document.getElementById('receiptNewBalance').textContent =
-            '₱' + Number(data.new_balance || 0).toFixed(2);
+            '₱' + formatCurrency(data.new_balance || 0);
         document.getElementById('receiptPrintBtn').href =
             `${baseUrl}/index.php?page=cashier-receipt&id=${statementId}`;
         receiptModal.classList.remove('hidden');

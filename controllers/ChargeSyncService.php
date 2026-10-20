@@ -129,18 +129,12 @@ class ChargeSyncService
         if ($this->tableExists('service_fulfillment_item')) {
             $stmt = $this->pdo->prepare(
                 'SELECT sfi.fulfillment_item_id, sfi.charge_item_id, sfi.quantity_fulfilled,
-                        COALESCE(receipts.quantity_received, 0) AS quantity_received, sfi.unit_price,
-                        sri.request_item_id, sr.request_id, sr.admission_id,
-                        ci.item_name
+                        sfi.unit_price, sri.request_item_id, sr.request_id,
+                        sr.admission_id, sr.notes AS request_notes, ci.item_name
                  FROM `service_fulfillment_item` sfi
                  INNER JOIN `service_request_item` sri ON sri.request_item_id = sfi.request_item_id
                  INNER JOIN `service_request` sr ON sr.request_id = sri.request_id
                  INNER JOIN `charge_item` ci ON ci.charge_item_id = sfi.charge_item_id
-                 LEFT JOIN (
-                     SELECT fulfillment_item_id, SUM(quantity_received) AS quantity_received
-                     FROM `service_fulfillment_receipt_item`
-                     GROUP BY fulfillment_item_id
-                 ) receipts ON receipts.fulfillment_item_id = sfi.fulfillment_item_id
                  WHERE sr.admission_id = ?'
             );
             $stmt->execute([$admissionId]);
@@ -149,56 +143,68 @@ class ChargeSyncService
             if ($fulfillmentItems) {
                 $insert = $this->pdo->prepare(
                     'INSERT INTO `charge`
-                        (statement_id, charge_item_id, quantity, actual_price,
+                        (statement_id, charge_item_id, quantity, actual_price, amount,
                          charge_datetime, processed_by_user_id, notes, fulfillment_item_id, source_type)
-                     VALUES (?, ?, ?, ?, NOW(), ?, ?, ?, "FULFILLMENT")'
+                     VALUES (?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?)'
                 );
                 $userId = (int)($_SESSION['user']['user_id'] ?? 0);
 
                 foreach ($fulfillmentItems as $item) {
-                    $marker = 'source=fulfillment:' . $item['fulfillment_item_id'];
+                    $isMedicineReturn = preg_match('/^MED_RETURN:(\d+)\|/', (string)$item['request_notes'], $returnMatch) === 1;
+                    $sourceType = $isMedicineReturn ? 'MEDICINE_RETURN' : 'FULFILLMENT';
+                    $fulfilledQuantity = (int)$item['quantity_fulfilled'];
+                    if ($isMedicineReturn) {
+                        $fulfilledQuantity *= -1;
+                    }
                     $chk = $this->pdo->prepare(
                         'SELECT charge_id FROM `charge`
-                         WHERE statement_id = ? AND source_type = "FULFILLMENT"
+                         WHERE statement_id = ? AND source_type = ?
                            AND fulfillment_item_id = ?'
                     );
-                    $chk->execute([$statementId, (int)$item['fulfillment_item_id']]);
+                    $chk->execute([$statementId, $sourceType, (int)$item['fulfillment_item_id']]);
                     $existingChargeId = (int)$chk->fetchColumn();
-                    $receivedQuantity = (int)$item['quantity_received'];
 
-                    if ($receivedQuantity <= 0) {
-                        if ($existingChargeId > 0) {
+                    if ($fulfilledQuantity <= 0) {
+                        if ($isMedicineReturn && $fulfilledQuantity === 0) continue;
+                        if (!$isMedicineReturn && $existingChargeId > 0) {
                             $delete = $this->pdo->prepare(
                                 'DELETE FROM `charge` WHERE charge_id = ?'
                             );
                             $delete->execute([$existingChargeId]);
                         }
-                        continue;
+                        if (!$isMedicineReturn) continue;
                     }
 
                     if ($existingChargeId > 0) {
                         $update = $this->pdo->prepare(
                             'UPDATE `charge`
-                             SET charge_item_id = ?, quantity = ?, actual_price = ?
+                             SET charge_item_id = ?, quantity = ?, actual_price = ?, amount = ?
                              WHERE charge_id = ?'
                         );
                         $update->execute([
                             (int)$item['charge_item_id'],
-                            $receivedQuantity,
+                            $fulfilledQuantity,
                             (float)$item['unit_price'],
+                            $fulfilledQuantity * (float)$item['unit_price'],
                             $existingChargeId,
                         ]);
                         continue;
                     }
 
+                    $notes = $isMedicineReturn
+                        ? 'medicine-return-origin=' . (int)$returnMatch[1] . '; '
+                            . 'Medicine return fulfillment item #' . (int)$item['fulfillment_item_id']
+                        : 'Fulfillment item #' . $item['fulfillment_item_id'] . ' (' . $item['item_name'] . ') — source=fulfillment:' . $item['fulfillment_item_id'];
                     $insert->execute([
                         $statementId,
                         (int)$item['charge_item_id'],
-                        $receivedQuantity,
+                        $fulfilledQuantity,
                         (float)$item['unit_price'],
+                        $fulfilledQuantity * (float)$item['unit_price'],
                         $userId,
-                        'Fulfillment item #' . $item['fulfillment_item_id'] . ' (' . $item['item_name'] . ') — ' . $marker,
+                        $notes,
                         (int)$item['fulfillment_item_id'],
+                        $sourceType,
                     ]);
                 }
             }

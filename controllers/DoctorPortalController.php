@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/BillingHook.php';
+require_once __DIR__ . '/../includes/ws_notify.php';
 
 class DoctorPortalController
 {
@@ -130,7 +131,56 @@ class DoctorPortalController
              ORDER BY a.admission_datetime DESC"
         );
         $stmt->execute(array_merge([$this->doctorId], $activeIds));
-        return $stmt->fetchAll();
+        $patients = $stmt->fetchAll();
+
+        if ($patients) {
+            foreach ($patients as &$patient) {
+                $patient['medicine_return_items'] = $this->getMedicineReturnItems((int)$patient['admission_id']);
+            }
+            unset($patient);
+        }
+
+        return $patients;
+    }
+
+    private function getMedicineReturnItems(int $admissionId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT sfi.fulfillment_item_id, sfi.quantity_fulfilled, sfi.unit_price,
+                    sfi.quantity_remaining, sfi.intake_status,
+                    ci.item_name, ci.unit_of_measure,
+                    GREATEST(
+                        LEAST(sfi.quantity_remaining, COALESCE((
+                            SELECT SUM(receipt.quantity_received)
+                            FROM `service_fulfillment_receipt_item` receipt
+                            WHERE receipt.fulfillment_item_id = sfi.fulfillment_item_id
+                        ), 0))
+                        - COALESCE((
+                            SELECT SUM(GREATEST(sri_return.quantity_requested - sri_return.quantity_fulfilled, 0))
+                            FROM `service_request` sr_return
+                            INNER JOIN `service_request_item` sri_return
+                                ON sri_return.request_id = sr_return.request_id
+                            WHERE sr_return.notes LIKE CONCAT("MED_RETURN:", sfi.fulfillment_item_id, "|%")
+                              AND sr_return.status IN ("Pending", "In Progress")
+                        ), 0),
+                        0
+                    ) AS returnable_quantity
+             FROM `service_fulfillment_item` sfi
+             INNER JOIN `service_fulfillment` sf ON sf.fulfillment_id = sfi.fulfillment_id
+             INNER JOIN `service_request_item` sri ON sri.request_item_id = sfi.request_item_id
+             INNER JOIN `service_request` sr ON sr.request_id = sri.request_id
+             INNER JOIN `department` d ON d.department_id = sr.department_id
+             INNER JOIN `charge_item` ci ON ci.charge_item_id = sfi.charge_item_id
+             WHERE sr.admission_id = ? AND sr.doctor_id = ?
+               AND d.department_code = "PHARM" AND sf.status = "Completed"
+               AND ci.is_stockable = 1
+             ORDER BY sf.fulfillment_datetime DESC'
+        );
+        $stmt->execute([$admissionId, $this->doctorId]);
+        return array_values(array_filter(
+            $stmt->fetchAll(),
+            static fn(array $item): bool => (int)$item['returnable_quantity'] > 0
+        ));
     }
 
     public function getAdmissionDetails(int $admissionId): ?array
@@ -248,6 +298,111 @@ class DoctorPortalController
         return $admission;
     }
 
+    public function requestMedicineReturn(array $data): array
+    {
+        throw new RuntimeException(
+            'Choose unused medicine quantities while confirming discharge readiness.',
+            409
+        );
+    }
+
+    private function createMedicineReturnRequest(
+        int $fulfillmentItemId,
+        int $quantity,
+        string $reason,
+        ?int $expectedAdmissionId = null
+    ): array {
+        $stmt = $this->pdo->prepare(
+            'SELECT sfi.fulfillment_item_id, sfi.quantity_fulfilled,
+                    sfi.quantity_remaining, sfi.intake_status,
+                    COALESCE((
+                        SELECT SUM(receipt.quantity_received)
+                        FROM `service_fulfillment_receipt_item` receipt
+                        WHERE receipt.fulfillment_item_id = sfi.fulfillment_item_id
+                    ), 0) AS quantity_received,
+                    sr.admission_id, sr.department_id, ast.status_name
+             FROM `service_fulfillment_item` sfi
+             INNER JOIN `service_fulfillment` sf ON sf.fulfillment_id = sfi.fulfillment_id
+             INNER JOIN `service_request_item` sri ON sri.request_item_id = sfi.request_item_id
+             INNER JOIN `service_request` sr ON sr.request_id = sri.request_id
+             INNER JOIN `department` d ON d.department_id = sr.department_id
+             INNER JOIN `charge_item` ci ON ci.charge_item_id = sfi.charge_item_id
+             INNER JOIN `admission` a ON a.admission_id = sr.admission_id
+             INNER JOIN `admission_status` ast ON ast.status_id = a.status_id
+             INNER JOIN `admission_doctor` ad ON ad.admission_id = a.admission_id
+                 AND ad.doctor_id = sr.doctor_id AND ad.ended_datetime IS NULL
+             WHERE sfi.fulfillment_item_id = ? AND sr.doctor_id = ?
+               AND d.department_code = "PHARM" AND ci.is_stockable = 1
+               AND sf.status = "Completed"
+             LIMIT 1 FOR UPDATE'
+        );
+        $stmt->execute([$fulfillmentItemId, $this->doctorId]);
+        $item = $stmt->fetch();
+        if (!$item
+            || ($expectedAdmissionId !== null && (int)$item['admission_id'] !== $expectedAdmissionId)
+            || !in_array($item['status_name'], ['Admitted', 'Transferred'], true)) {
+            throw new RuntimeException('A Pharmacy return can only be requested as part of discharge readiness.', 409);
+        }
+
+        $requestMarker = 'MED_RETURN:' . $fulfillmentItemId . '|%';
+        $stmt = $this->pdo->prepare(
+            'SELECT COALESCE(SUM(GREATEST(sri.quantity_requested - sri.quantity_fulfilled, 0)), 0)
+             FROM `service_request` sr
+             INNER JOIN `service_request_item` sri ON sri.request_id = sr.request_id
+             WHERE sr.notes LIKE ? AND sr.status IN ("Pending", "In Progress")'
+        );
+        $stmt->execute([$requestMarker]);
+        $pendingQuantity = (int)$stmt->fetchColumn();
+        $receivedQuantity = min(
+            min((int)$item['quantity_fulfilled'], (int)$item['quantity_received']),
+            (int)$item['quantity_remaining']
+        );
+        $remaining = $receivedQuantity - $pendingQuantity;
+        if ($quantity <= 0 || $quantity > $remaining) {
+            throw new RuntimeException(
+                'Return quantity cannot exceed the unreturned amount of ' . max(0, $remaining) . '.',
+                422
+            );
+        }
+
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO `service_request`
+                (admission_id, doctor_id, department_id, priority, status, instructions, notes, request_datetime)
+             VALUES (?, ?, ?, "Routine", "Pending", ?, ?, NOW())'
+        );
+        $markerAndReason = 'MED_RETURN:' . $fulfillmentItemId . '|' . str_replace(["\r", "\n"], ' ', $reason);
+        $stmt->execute([
+            (int)$item['admission_id'],
+            $this->doctorId,
+            (int)$item['department_id'],
+            'Medicine return for fulfillment item #' . $fulfillmentItemId . ': ' . $reason,
+            $markerAndReason,
+        ]);
+        $requestId = (int)$this->pdo->lastInsertId();
+
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO `service_request_item`
+                (request_id, charge_item_id, quantity_requested, quantity_fulfilled, instructions)
+             SELECT ?, sfi.charge_item_id, ?, 0, ?
+             FROM `service_fulfillment_item` sfi
+             WHERE sfi.fulfillment_item_id = ?'
+        );
+        $stmt->execute([
+            $requestId,
+            $quantity,
+            'Return against original fulfillment item #' . $fulfillmentItemId,
+            $fulfillmentItemId,
+        ]);
+        if ($stmt->rowCount() !== 1) {
+            throw new RuntimeException('Could not create the medicine return request.', 500);
+        }
+
+        return [
+            'request_id' => $requestId,
+            'department_id' => (int)$item['department_id'],
+        ];
+    }
+
     public function getActiveDiagnoses(): array
     {
         return $this->pdo->query(
@@ -286,10 +441,14 @@ class DoctorPortalController
             );
             $stmt->execute([$admissionId, $diagnosisId, $diagnosisType, $this->doctorId]);
 
+            $id = (int)$this->pdo->lastInsertId();
+
+            ws_broadcast('diagnosis.added', ['admission_id' => $admissionId, 'admission_diagnosis_id' => $id], [1, 2]);
+
             $this->json(201, [
                 'success' => true,
                 'message' => 'Diagnosis recorded successfully.',
-                'id'      => (int)$this->pdo->lastInsertId(),
+                'id'      => $id,
             ]);
         } catch (Throwable $e) {
             error_log('[DoctorPortalController::saveDiagnosis] ' . $e->getMessage());
@@ -303,19 +462,22 @@ class DoctorPortalController
         if ($id <= 0) $this->json(400, ['success' => false, 'message' => 'Missing diagnosis id.']);
 
         $stmt = $this->pdo->prepare(
-            'SELECT adi.admission_diagnosis_id
+            'SELECT adi.admission_diagnosis_id, adi.admission_id
              FROM `admission_diagnosis` adi
              INNER JOIN `admission_doctor` ad ON ad.admission_id = adi.admission_id
              WHERE adi.admission_diagnosis_id = ? AND ad.doctor_id = ? AND ad.ended_datetime IS NULL
              LIMIT 1'
         );
         $stmt->execute([$id, $this->doctorId]);
-        if (!$stmt->fetch()) {
+        $row = $stmt->fetch();
+        if (!$row) {
             $this->json(403, ['success' => false, 'message' => 'Access denied.']);
         }
 
         $stmt = $this->pdo->prepare('DELETE FROM `admission_diagnosis` WHERE admission_diagnosis_id = ?');
         $stmt->execute([$id]);
+
+        ws_broadcast('diagnosis.removed', ['admission_id' => (int)$row['admission_id'], 'admission_diagnosis_id' => $id], [1, 2]);
 
         $this->json(200, ['success' => true, 'message' => 'Diagnosis removed.']);
     }
@@ -393,10 +555,12 @@ class DoctorPortalController
         }
 
         $stmt = $this->pdo->prepare(
-            'SELECT ad.admission_doctor_id, ast.status_name
+            'SELECT ad.admission_doctor_id, ast.status_name,
+                    p.first_name, p.last_name
             FROM `admission_doctor` ad
             INNER JOIN `admission` a ON a.admission_id = ad.admission_id
             INNER JOIN `admission_status` ast ON ast.status_id = a.status_id
+            INNER JOIN `patient` p ON p.patient_id = a.patient_id
             WHERE ad.admission_id = ? AND ad.doctor_id = ? AND ad.ended_datetime IS NULL
             LIMIT 1'
         );
@@ -410,7 +574,8 @@ class DoctorPortalController
         }
 
         $departmentStmt = $this->pdo->prepare(
-            'SELECT department_id, charge_category_id FROM `department` WHERE department_id = ? AND is_active = 1 LIMIT 1'
+            'SELECT department_id, charge_category_id, department_code
+             FROM `department` WHERE department_id = ? AND is_active = 1 LIMIT 1'
         );
         $departmentStmt->execute([$departmentId]);
         $dept = $departmentStmt->fetch();
@@ -431,7 +596,7 @@ class DoctorPortalController
             if ($itemId <= 0 || $quantity <= 0) continue;
 
             $stmt = $this->pdo->prepare(
-                'SELECT ci.charge_item_id, ci.category_id
+                'SELECT ci.charge_item_id, ci.category_id, ci.is_stockable
                 FROM `charge_item` ci
                 WHERE ci.charge_item_id = ? AND ci.is_active = 1 LIMIT 1'
             );
@@ -441,7 +606,13 @@ class DoctorPortalController
                 $this->json(404, ['success' => false, 'message' => 'One or more charge items are invalid or inactive.']);
             }
 
-            if (!empty($dept['charge_category_id']) && (int)$ci['category_id'] !== (int)$dept['charge_category_id']) {
+            if ((int)$ci['is_stockable'] === 1 && $dept['department_code'] !== 'PHARM') {
+                $this->json(422, ['success' => false, 'message' => 'Stock-tracked items must be requested from the Pharmacy department.']);
+            }
+
+            if ((int)$ci['is_stockable'] !== 1
+                && !empty($dept['charge_category_id'])
+                && (int)$ci['category_id'] !== (int)$dept['charge_category_id']) {
                 $this->json(422, ['success' => false, 'message' => 'Selected item does not belong to the selected department\'s charge category.']);
             }
 
@@ -498,6 +669,13 @@ class DoctorPortalController
             }
 
             $this->pdo->commit();
+
+            ws_broadcast('service.request.created', [
+                'request_id' => $requestId,
+                'admission_id' => $admissionId,
+                'patient_name' => trim($assignment['first_name'] . ' ' . $assignment['last_name']),
+                'department_id' => $departmentId,
+            ], [1, 2, 5], $departmentId);
 
             $this->json(201, [
                 'success' => true,
@@ -558,7 +736,12 @@ class DoctorPortalController
              ORDER BY a.admission_datetime ASC"
         );
         $stmt->execute(array_merge([$this->doctorId], $activeIds));
-        return $stmt->fetchAll();
+        $patients = $stmt->fetchAll();
+        foreach ($patients as &$patient) {
+            $patient['medicine_return_items'] = $this->getMedicineReturnItems((int)$patient['admission_id']);
+        }
+        unset($patient);
+        return $patients;
     }
 
     public function confirmDischarge(): void
@@ -580,9 +763,11 @@ class DoctorPortalController
         }
 
         $stmt = $this->pdo->prepare(
-            'SELECT a.admission_id, a.status_id, ast.status_name
+            'SELECT a.admission_id, a.status_id, ast.status_name,
+                    p.first_name, p.last_name
              FROM `admission` a
              INNER JOIN `admission_status` ast ON ast.status_id = a.status_id
+             INNER JOIN `patient` p ON p.patient_id = a.patient_id
              WHERE a.admission_id = ? LIMIT 1'
         );
         $stmt->execute([$admissionId]);
@@ -644,6 +829,72 @@ class DoctorPortalController
             }
 
             $stmt = $this->pdo->prepare(
+                'SELECT COUNT(*)
+                 FROM `service_fulfillment_item` sfi
+                 INNER JOIN `service_fulfillment` sf ON sf.fulfillment_id = sfi.fulfillment_id
+                 INNER JOIN `service_request_item` sri ON sri.request_item_id = sfi.request_item_id
+                 INNER JOIN `service_request` sr ON sr.request_id = sri.request_id
+                 INNER JOIN `department` d ON d.department_id = sr.department_id
+                 INNER JOIN `charge_item` ci ON ci.charge_item_id = sfi.charge_item_id
+                 WHERE sr.admission_id = ? AND sr.doctor_id = ?
+                   AND d.department_code = "PHARM" AND ci.is_stockable = 1
+                   AND sf.status = "Completed"
+                   AND (sr.notes IS NULL OR sr.notes NOT LIKE "MED_RETURN:%")
+                   AND EXISTS (
+                       SELECT 1 FROM `service_fulfillment_receipt_item` receipt
+                       WHERE receipt.fulfillment_item_id = sfi.fulfillment_item_id
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM `service_fulfillment_intake_log` intake_log
+                       WHERE intake_log.fulfillment_item_id = sfi.fulfillment_item_id
+                   )'
+            );
+            $stmt->execute([$admissionId, $this->doctorId]);
+            if ((int)$stmt->fetchColumn() > 0) {
+                $this->pdo->rollBack();
+                $this->json(409, [
+                    'success' => false,
+                    'message' => 'Nursing must review received Pharmacy items in the Medicine Intake Monitor before discharge readiness can be confirmed.',
+                ]);
+            }
+
+            $medicineReturns = $data['medicine_returns'] ?? [];
+            if (!is_array($medicineReturns)) {
+                throw new RuntimeException('Medicine return selections are invalid.', 422);
+            }
+            $seenFulfillmentItems = [];
+            $createdMedicineReturns = [];
+            foreach ($medicineReturns as $return) {
+                if (!is_array($return)) {
+                    throw new RuntimeException('Medicine return selection is invalid.', 422);
+                }
+                $fulfillmentItemId = (int)($return['fulfillment_item_id'] ?? 0);
+                $quantity = filter_var($return['quantity'] ?? null, FILTER_VALIDATE_INT);
+                $disposition = (string)($return['disposition'] ?? 'return');
+                if ($fulfillmentItemId <= 0 || $quantity === false || $quantity < 0
+                    || !in_array($disposition, ['take-home', 'return'], true)
+                    || isset($seenFulfillmentItems[$fulfillmentItemId])) {
+                    throw new RuntimeException('Select a valid discharge decision for each Pharmacy item.', 422);
+                }
+                $seenFulfillmentItems[$fulfillmentItemId] = true;
+                if ($disposition === 'take-home') {
+                    if ($quantity !== 0) {
+                        throw new RuntimeException('Take-home items cannot include a Pharmacy return quantity.', 422);
+                    }
+                    continue;
+                }
+                if ($quantity <= 0) {
+                    throw new RuntimeException('Enter a positive quantity for every item selected for return.', 422);
+                }
+                $createdMedicineReturns[] = $this->createMedicineReturnRequest(
+                    $fulfillmentItemId,
+                    $quantity,
+                    'Unused medicine returned at discharge readiness.',
+                    $admissionId
+                );
+            }
+
+            $stmt = $this->pdo->prepare(
                 'UPDATE `admission`
                  SET status_id = ?,
                      notes = CONCAT(COALESCE(notes, ""), ?)
@@ -655,14 +906,34 @@ class DoctorPortalController
 
             $this->pdo->commit();
 
+            $patientName = trim($row['first_name'] . ' ' . $row['last_name']);
+            ws_broadcast('discharge.confirmed', [
+                'admission_id' => $admissionId,
+                'patient_name' => $patientName,
+            ], [1, 2, 3, 4]);
+            foreach ($createdMedicineReturns as $medicineReturn) {
+                ws_broadcast('service.request.created', [
+                    'request_id' => $medicineReturn['request_id'],
+                    'admission_id' => $admissionId,
+                    'patient_name' => $patientName,
+                    'department_id' => $medicineReturn['department_id'],
+                ], [1, 2, 5], $medicineReturn['department_id']);
+            }
+
             $this->json(200, [
                 'success' => true,
-                'message' => 'Patient marked Ready for Discharge. Nursing staff and cashier have been notified.',
+                'message' => empty($createdMedicineReturns)
+                    ? 'Patient marked Ready for Discharge. Nursing staff and cashier have been notified.'
+                    : 'Patient marked Ready for Discharge. The unused medicine was sent to Pharmacy; nursing can discharge after Pharmacy receives it.',
             ]);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) $this->pdo->rollBack();
             error_log('[DoctorPortalController::confirmDischarge] ' . $e->getMessage());
-            $this->json(500, ['success' => false, 'message' => 'Could not mark patient ready for discharge.']);
+            $status = in_array((int)$e->getCode(), [409, 422], true) ? (int)$e->getCode() : 500;
+            $message = $status < 500
+                ? $e->getMessage()
+                : 'Could not mark patient ready for discharge.';
+            $this->json($status, ['success' => false, 'message' => $message]);
         }
     }
 
@@ -706,10 +977,24 @@ class DoctorPortalController
                 !empty($data['notes']) ? $data['notes'] : null,
             ]);
 
+            $id = (int)$this->pdo->lastInsertId();
+
+            $patientStmt = $this->pdo->prepare(
+                'SELECT first_name, last_name FROM `patient` WHERE patient_id = ? LIMIT 1'
+            );
+            $patientStmt->execute([$patientId]);
+            $patient = $patientStmt->fetch();
+            ws_broadcast('consultation.created', [
+                'consultation_id' => $id,
+                'patient_id' => $patientId,
+                'patient_name' => $patient ? trim($patient['first_name'] . ' ' . $patient['last_name']) : '',
+                'purpose' => $purpose,
+            ], [1, 2]);
+
             $this->json(201, [
                 'success' => true,
                 'message' => 'Consultation scheduled.',
-                'id'      => (int)$this->pdo->lastInsertId(),
+                'id'      => $id,
             ]);
         } catch (Throwable $e) {
             error_log('[DoctorPortalController::createConsultation] ' . $e->getMessage());
@@ -728,10 +1013,29 @@ class DoctorPortalController
         }
 
         $stmt = $this->pdo->prepare(
+            'SELECT c.patient_id, p.first_name, p.last_name
+             FROM `consultation` c
+             INNER JOIN `patient` p ON p.patient_id = c.patient_id
+             WHERE c.consultation_id = ? AND c.doctor_id = ? LIMIT 1'
+        );
+        $stmt->execute([$id, $this->doctorId]);
+        $patient = $stmt->fetch();
+        if (!$patient) {
+            $this->json(404, ['success' => false, 'message' => 'Consultation not found.']);
+        }
+
+        $stmt = $this->pdo->prepare(
             'UPDATE `consultation` SET status = ?
              WHERE consultation_id = ? AND doctor_id = ?'
         );
         $stmt->execute([$status, $id, $this->doctorId]);
+
+        ws_broadcast('consultation.updated', [
+            'consultation_id' => $id,
+            'patient_id' => (int)$patient['patient_id'],
+            'patient_name' => trim($patient['first_name'] . ' ' . $patient['last_name']),
+            'status' => $status,
+        ], [1, 2]);
 
         $this->json(200, ['success' => true, 'message' => 'Consultation status updated.']);
     }

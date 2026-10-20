@@ -94,6 +94,7 @@ $archivedItems = $totalItems - $activeItems;
                     <th class="text-left px-6 py-3.5 font-semibold text-slate-700 text-xs uppercase tracking-wide">Category</th>
                     <th class="text-right px-6 py-3.5 font-semibold text-slate-700 text-xs uppercase tracking-wide">Price</th>
                     <th class="text-center px-6 py-3.5 font-semibold text-slate-700 text-xs uppercase tracking-wide">Flags</th>
+                    <th class="text-center px-6 py-3.5 font-semibold text-slate-700 text-xs uppercase tracking-wide">Inventory</th>
                     <th class="text-left px-6 py-3.5 font-semibold text-slate-700 text-xs uppercase tracking-wide">State</th>
                     <th class="text-right px-6 py-3.5 font-semibold text-slate-700 text-xs uppercase tracking-wide">Actions</th>
                 </tr>
@@ -143,6 +144,17 @@ $archivedItems = $totalItems - $activeItems;
                                     <span class="text-xs text-slate-400">—</span>
                                 <?php endif; ?>
                             </div>
+                        </td>
+
+                        <td class="px-6 py-4 text-center">
+                            <?php if ((int)$i['is_stockable'] === 1): ?>
+                                <span class="inline-flex flex-col items-center rounded-lg bg-teal-50 border border-teal-100 px-2.5 py-1 text-xs font-medium text-teal-700">
+                                    <span>Stock tracked</span>
+                                    <span><?= number_format((int)$i['stock_quantity']) ?> <?= htmlspecialchars($i['unit_of_measure'] ?: 'units') ?></span>
+                                </span>
+                            <?php else: ?>
+                                <span class="text-xs text-slate-400">Not stockable</span>
+                            <?php endif; ?>
                         </td>
 
                         <td class="px-6 py-4">
@@ -328,6 +340,18 @@ $archivedItems = $totalItems - $activeItems;
                                class="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4">
                         <span class="text-sm text-slate-700">Requires doctor's order</span>
                     </label>
+                    <label class="inline-flex items-center gap-3 cursor-pointer select-none ml-6">
+                        <input type="checkbox" id="is_stockable"
+                               class="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4">
+                        <span class="text-sm text-slate-700">Track Pharmacy stock</span>
+                    </label>
+                    <label class="mt-3 block max-w-xs text-sm font-medium text-slate-700">
+                        <span id="stockQuantityLabel">Opening stock</span>
+                        <input type="number" id="stock_quantity" step="1" value="0"
+                               class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <span class="mt-1 block text-xs font-normal text-slate-500">Enable for any item managed by Pharmacy, including medicine and dextrose. For new items, enter opening stock. For existing items, enter a signed adjustment; stock is reduced on Pharmacy fulfillment and POS sales.</span>
+                    </label>
+                    <p class="mt-2 text-xs text-slate-500">Use stock tracking only for medicine items in the Drugs &amp; Medicines category.</p>
                 </div>
 
             </div>

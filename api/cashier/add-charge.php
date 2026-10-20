@@ -1,7 +1,7 @@
 <?php
-
 require_once __DIR__ . '/../../config/config.php';
 require_once __DIR__ . '/../../config/connection.php';
+require_once __DIR__ . '/../../includes/ws_notify.php';
 require_once __DIR__ . '/../../controllers/CashierController.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -22,6 +22,7 @@ if ($id <= 0) {
 
 try {
     $controller->addCharge($id, $controller->input());
+    ws_broadcast('billing.charge.added', ['statement_id' => $id], [1, 4]);
     echo json_encode(['success' => true, 'message' => 'Charge added.']);
 } catch (Throwable $e) {
     http_response_code(500);

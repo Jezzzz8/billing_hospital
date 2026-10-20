@@ -160,7 +160,9 @@ $patients = $controller->getAllMyPatients();
             });
             if (res.data.success) {
                 showAlert('success', res.data.message);
-                setTimeout(() => location.reload(), 800);
+                setTimeout(() => window.refreshCurrentPage().catch(error => {
+                    console.error('Could not refresh the consultations page.', error);
+                }), 800);
             }
         } catch (err) {
             showAlert('error', err.response?.data?.message || 'Could not schedule consultation.');
@@ -177,16 +179,20 @@ $patients = $controller->getAllMyPatients();
         try {
             await updateStatus(this.dataset.id, 'Completed');
             showAlert('success', 'Marked as completed.');
-            setTimeout(() => location.reload(), 600);
+            setTimeout(() => window.refreshCurrentPage().catch(error => {
+                console.error('Could not refresh the consultations page.', error);
+            }), 600);
         } catch (e) { showAlert('error', 'Failed.'); }
     }));
 
     document.querySelectorAll('.mark-cancelled-btn').forEach(b => b.addEventListener('click', async function() {
-        if (!confirm('Cancel this consultation?')) return;
+        if (!await window.confirmWithSweetAlert('Cancel this consultation?')) return;
         try {
             await updateStatus(this.dataset.id, 'Cancelled');
             showAlert('success', 'Cancelled.');
-            setTimeout(() => location.reload(), 600);
+            setTimeout(() => window.refreshCurrentPage().catch(error => {
+                console.error('Could not refresh the consultations page.', error);
+            }), 600);
         } catch (e) { showAlert('error', 'Failed.'); }
     }));
 })();

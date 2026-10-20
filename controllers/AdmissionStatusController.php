@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/../includes/ws_notify.php';
+
 class AdmissionStatusController
 {
     private PDO $pdo;
@@ -34,10 +36,13 @@ class AdmissionStatusController
             !empty($data['color_code']) ? $data['color_code'] : null,
         ]);
 
+        $id = (int)$this->pdo->lastInsertId();
+        ws_broadcast('master.updated', ['resource' => 'admission-statuses', 'operation' => 'create', 'id' => $id], [1]);
+
         $this->json(201, [
             'success' => true,
             'message' => 'Admission status created successfully.',
-            'id'      => (int)$this->pdo->lastInsertId(),
+            'id'      => $id,
         ]);
     }
 
@@ -64,6 +69,8 @@ class AdmissionStatusController
             !empty($data['color_code']) ? $data['color_code'] : null,
             $id,
         ]);
+
+        ws_broadcast('master.updated', ['resource' => 'admission-statuses', 'operation' => 'update', 'id' => $id], [1]);
 
         $this->json(200, ['success' => true, 'message' => 'Admission status updated successfully.']);
     }
@@ -93,6 +100,8 @@ class AdmissionStatusController
 
         $stmt = $this->pdo->prepare('DELETE FROM `admission_status` WHERE status_id = ?');
         $stmt->execute([$id]);
+
+        ws_broadcast('master.updated', ['resource' => 'admission-statuses', 'operation' => 'delete', 'id' => $id], [1]);
 
         $this->json(200, ['success' => true, 'message' => 'Admission status deleted.']);
     }

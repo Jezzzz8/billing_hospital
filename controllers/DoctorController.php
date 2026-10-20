@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/../includes/ws_notify.php';
+
 class DoctorController
 {
     private PDO $pdo;
@@ -100,6 +102,8 @@ class DoctorController
 
             $this->pdo->commit();
 
+            ws_broadcast('doctor.profile.created', ['doctor_id' => $doctorId, 'user_id' => $userId], [1]);
+
             $this->json(201, [
                 'success'   => true,
                 'message'   => 'Doctor created successfully.',
@@ -163,6 +167,9 @@ class DoctorController
             $this->saveSpecializations($doctorId, $data['specializations'] ?? [], (int)($data['primary_specialization_id'] ?? 0));
 
             $this->pdo->commit();
+
+            ws_broadcast('doctor.profile.updated', ['doctor_id' => $doctorId, 'user_id' => $userId], [1, 2]);
+
             $this->json(200, ['success' => true, 'message' => 'Doctor updated successfully.']);
         } catch (Throwable $e) {
             $this->pdo->rollBack();
@@ -236,6 +243,8 @@ class DoctorController
             $this->pdo->rollBack();
             $this->json(500, ['success' => false, 'message' => 'Could not update doctor.']);
         }
+
+        ws_broadcast('doctor.profile.toggled', ['doctor_id' => $doctorId, 'is_active' => $newState], [1]);
 
         $this->json(200, [
             'success'   => true,

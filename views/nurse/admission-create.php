@@ -16,14 +16,24 @@ foreach ($availableRooms as $room) {
 
 $selectedPatientId = (int)($_GET['patient_id'] ?? 0);
 $selectedPatient = $selectedPatientId ? $controller->getPatientDetails($selectedPatientId) : null;
-
-
-if ($selectedPatient && $selectedPatient['current_admission']) {
-    header('Location: ' . BASE_URL . '/index.php?page=nurse-room-assignments&admission_id=' . $selectedPatient['current_admission']['admission_id']);
-    exit;
-}
 ?>
 
+<?php if ($selectedPatient && !empty($selectedPatient['current_admission'])): ?>
+    <div class="mb-8">
+        <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Patient Already Admitted</h1>
+        <p class="mt-1 text-sm text-slate-500">This patient already has an active admission. Manage the existing admission instead of creating another one.</p>
+    </div>
+    <div class="rounded-xl border border-amber-200 bg-amber-50 p-6">
+        <p class="font-semibold text-amber-900">
+            <?= htmlspecialchars($selectedPatient['first_name'] . ' ' . $selectedPatient['last_name']) ?>
+            already has active admission #<?= (int)$selectedPatient['current_admission']['admission_id'] ?>.
+        </p>
+        <a href="<?= BASE_URL ?>/index.php?page=nurse-room-assignments&admission_id=<?= (int)$selectedPatient['current_admission']['admission_id'] ?>"
+           class="mt-4 inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">
+            Manage existing admission
+        </a>
+    </div>
+<?php else: ?>
 <div class="mb-8">
     <h1 class="text-2xl font-bold text-slate-900 tracking-tight">New Admission</h1>
     <p class="mt-1 text-sm text-slate-500">Admit a patient, assign a room, and choose the attending doctor(s).</p>
@@ -365,3 +375,4 @@ if ($selectedPatient && $selectedPatient['current_admission']) {
     });
 })();
 </script>
+<?php endif; ?>

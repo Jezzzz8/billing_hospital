@@ -1,4 +1,5 @@
 @import "tailwindcss";
 
 @source "../../views/**/*.php";
+@source "../../patient-portal.php";
 @source "../js/**/*.js";

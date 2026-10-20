@@ -5,6 +5,7 @@ header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../config/connection.php';
 require_once __DIR__ . '/../controllers/CashierController.php';
 require_once __DIR__ . '/../controllers/ChargeSyncService.php';
+require_once __DIR__ . '/../includes/ws_notify.php';
 
 if (empty($_SESSION['user'])) {
     http_response_code(401);
@@ -108,6 +109,7 @@ try {
 
         case 'create-statement':
             $controller->createStatement();
+            ws_broadcast('billing.statement.created', [], [1, 4]);
             break;
 
         case 'update-deductions':
@@ -125,6 +127,7 @@ try {
             $id = (int)($input['statement_id'] ?? $_GET['statement_id'] ?? 0);
             try {
                 $controller->addCharge($id, $input);
+                ws_broadcast('billing.charge.added', ['statement_id' => $id], [1, 4]);
                 echo json_encode(['success' => true, 'message' => 'Charge added.', 'data' => null]);
             } catch (Throwable $e) {
                 http_response_code(422);
@@ -137,6 +140,7 @@ try {
             $chargeId = (int)($input['charge_id'] ?? 0);
             try {
                 $controller->removeCharge($statementId, $chargeId);
+                ws_broadcast('billing.charge.removed', ['statement_id' => $statementId, 'charge_id' => $chargeId], [1, 4]);
                 echo json_encode(['success' => true, 'message' => 'Charge removed.', 'data' => null]);
             } catch (Throwable $e) {
                 http_response_code($e->getCode() === 409 ? 409 : 422);
@@ -149,6 +153,11 @@ try {
             try {
                 $reference = $controller->addPayment($id, $input);
                 $details = $controller->getStatementSummary($id);
+                ws_broadcast('billing.payment.added', [
+                    'statement_id' => $id,
+                    'reference'    => $reference,
+                    'new_balance'  => $details['balance_amount'] ?? 0,
+                ], [1, 4]);
                 echo json_encode([
                     'success' => true,
                     'message' => 'Payment recorded.',
@@ -168,6 +177,7 @@ try {
             $paymentId = (int)($input['payment_id'] ?? 0);
             try {
                 $controller->removePayment($statementId, $paymentId);
+                ws_broadcast('billing.payment.removed', ['statement_id' => $statementId, 'payment_id' => $paymentId], [1, 4]);
                 echo json_encode(['success' => true, 'message' => 'Payment removed.', 'data' => null]);
             } catch (Throwable $e) {
                 http_response_code(422);

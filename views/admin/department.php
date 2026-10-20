@@ -283,7 +283,7 @@ $chargeCategories = $controller->getChargeCategories();
             const id = this.dataset.id;
             const isActive = parseInt(this.dataset.active, 10) === 1;
             const action = isActive ? 'archive' : 'reactivate';
-            if (!confirm(`Are you sure you want to ${action} this department?`)) return;
+            if (!await window.confirmWithSweetAlert(`Are you sure you want to ${action} this department?`)) return;
 
             this.disabled = true;
             const originalText = this.textContent;

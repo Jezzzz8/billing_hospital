@@ -1,11 +1,11 @@
 <?php
-
 header('Content-Type: application/json; charset=utf-8');
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 
 require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../config/connection.php';
+require_once __DIR__ . '/../includes/ws_notify.php';
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -148,6 +148,34 @@ if (!method_exists($controller, $method)) {
 
 try {
     $controller->$method();
+
+    $broadcastRoles = match ($resource) {
+        'users'              => [1],
+        'doctors'            => [1, 2],
+        'charge-items',
+        'charge-categories',
+        'payment-types',
+        'billing-statuses',
+        'billing'            => [1, 4],
+        'rooms',
+        'room-types',
+        'room-statuses',
+        'buildings',
+        'floor-levels',
+        'departments'        => [1, 3],
+        'genders',
+        'roles',
+        'specializations',
+        'diagnoses',
+        'admission-statuses' => [1],
+        default              => [1],
+    };
+
+    ws_broadcast('master.updated', [
+        'resource'  => $resource,
+        'operation' => $operation,
+        'id'        => $id,
+    ], $broadcastRoles);
 } catch (Throwable $e) {
     error_log('[api/admin.php] ' . $resource . '.' . $operation . ': ' . $e->getMessage());
     http_response_code(500);

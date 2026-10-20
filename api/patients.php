@@ -1,5 +1,4 @@
 <?php
-
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
@@ -10,6 +9,7 @@ error_reporting(E_ALL);
 
 require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../includes/api_auth.php';
+require_once __DIR__ . '/../includes/ws_notify.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);

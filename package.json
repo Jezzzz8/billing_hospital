@@ -5,7 +5,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "vendor:axios": "node -e \"require('fs').mkdirSync('assets/js/vendor',{recursive:true});require('fs').copyFileSync('node_modules/axios/dist/axios.min.js','assets/js/vendor/axios.min.js')\"",
+    "vendor:axios": "node -e \"require('fs').mkdirSync('assets/js/vendor',{recursive:true});require('fs').copyFileSync('node_modules/axios/dist/axios.min.js','assets/js/vendor/axios.min.js');require('fs').copyFileSync('node_modules/sweetalert2/dist/sweetalert2.all.min.js','assets/js/vendor/sweetalert2.all.min.js');require('fs').copyFileSync('node_modules/sweetalert2/dist/sweetalert2.min.css','assets/css/sweetalert2.min.css')\"",
     "postinstall": "npm run vendor:axios",
     "tailwind:build": "tailwindcss -i ./assets/css/tailwind.css -o ./assets/css/app.css --minify",
     "tailwind:watch": "tailwindcss -i ./assets/css/tailwind.css -o ./assets/css/app.css --watch"
@@ -23,7 +23,8 @@
   },
   "homepage": "https://github.com/Jezzzz8/billing_hospital#readme",
   "dependencies": {
-    "axios": "^1.7.7"
+    "axios": "^1.7.7",
+    "sweetalert2": "^11.26.24"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.3.3",

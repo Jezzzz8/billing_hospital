@@ -169,7 +169,7 @@ document.addEventListener('spa:page-loaded', event => {
         const requests = admission.service_requests || [];
         const items = options.items.map((item) => `<option value="${Number(item.charge_item_id)}">${escapeHtml(item.category_name)} — ${escapeHtml(item.item_name)} (${Number(item.default_price).toFixed(2)}${item.unit_of_measure ? ` / ${escapeHtml(item.unit_of_measure)}` : ''})</option>`).join('');
         const departments = (options.departments || []).map((department) => `<option value="${Number(department.department_id)}">${escapeHtml(department.department_name)}</option>`).join('');
-        const rows = requests.length ? requests.map((r) => `<tr><td class="px-5 py-3"><p class="font-medium">${escapeHtml(r.item_name)}</p><p class="text-xs text-slate-500">${escapeHtml(r.category_name)} · ${escapeHtml(r.item_code)}</p></td>
+        const rows = requests.length ? requests.map((r) => `<tr><td class="px-5 py-3"><p class="font-medium">${escapeHtml(String(r.notes || '').startsWith('MED_RETURN:') ? 'Pharmacy stock return — ' + r.item_name : r.item_name)}</p><p class="text-xs text-slate-500">${escapeHtml(r.category_name)} · ${escapeHtml(r.item_code)}${String(r.notes || '').startsWith('MED_RETURN:') ? ` · ${escapeHtml(String(r.instructions || ''))}` : ''}</p></td>
             <td class="px-5 py-3">${Number(r.quantity)}</td><td class="px-5 py-3">${escapeHtml(date(r.request_datetime, { dateStyle: 'medium', timeStyle: 'short' }))}</td><td class="px-5 py-3">${escapeHtml(r.status)}</td></tr>`).join('') : emptyRow(4, 'No service requests yet.');
         app.innerHTML = `${heading('Service Requests', 'Order and manage services for this admission.')}<p class="mb-4"><a class="text-sm text-blue-700" href="${href('doctor-service-requests')}">← Back to admissions</a></p>${alertArea()}
             <div class="mb-6 rounded-xl border border-slate-200 bg-white p-6"><h2 class="text-xl font-bold">${escapeHtml(patientName(admission))}</h2><p class="text-sm text-slate-500">Admission #${Number(admission.admission_id)} · ${escapeHtml(admission.admission_status_name)}</p></div>
@@ -183,7 +183,8 @@ document.addEventListener('spa:page-loaded', event => {
                     </div></div>
                     <button type="button" data-action="add-request-item" class="w-full rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">Add another item</button>
                     <button class="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white">Submit Request</button></form>`, 'lg:col-span-1')}
-                ${card(`Service Requests (${requests.length})`, table(['Item', 'Qty', 'Requested', 'Status'], rows), 'lg:col-span-2')}</div>`;
+                ${card('Pharmacy items at discharge', '<p class="p-6 text-sm text-slate-500">Nursing tracks intake status and remaining quantity. When confirming discharge readiness, the doctor decides whether remaining medicines or other Pharmacy items go home with the patient or are returned. Take-home items remain charged.</p>')}
+                ${card(`Service Requests (${requests.length})`, table(['Item', 'Qty', 'Requested', 'Status'], rows), 'lg:col-span-3')}</div>`;
     }
 
     function renderDischarge(patients) {
@@ -243,7 +244,7 @@ document.addEventListener('spa:page-loaded', event => {
             return;
         }
         if (['remove-diagnosis', 'consult-status'].includes(action)
-            && !confirm('Are you sure you want to continue?')) return;
+            && !await window.confirmWithSweetAlert('Are you sure you want to continue?')) return;
         try {
             let operation;
             let data = { id: Number(id) };
@@ -253,7 +254,10 @@ document.addEventListener('spa:page-loaded', event => {
                 data.status = status;
             }
             if (action === 'confirm-discharge') {
-                const notes = prompt(`Confirm ${name || 'patient'} is ready for discharge. Optional clinical notes:`, '');
+                const notes = await window.promptWithSweetAlert(
+                    `Confirm ${name || 'patient'} is ready for discharge. Optional clinical notes:`,
+                    { title: 'Confirm discharge readiness', placeholder: 'Optional clinical notes' }
+                );
                 if (notes === null) return;
                 operation = 'confirm-discharge';
                 data = { admission_id: Number(id), notes };

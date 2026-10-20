@@ -814,7 +814,7 @@ foreach ($statements as $s) {
     }
 
     async function removeCharge(chargeId) {
-        if (!confirm('Remove this charge from the statement?')) return;
+        if (!await window.confirmWithSweetAlert('Remove this charge from the statement?')) return;
         try {
             const res = await axios.post(`${baseUrl}/api/cashier/remove-charge.php?id=${currentStatementId}&charge_id=${chargeId}`);
             if (res.data.success) {
@@ -827,7 +827,7 @@ foreach ($statements as $s) {
     }
 
     async function removePayment(paymentId) {
-        if (!confirm('Remove this payment?')) return;
+        if (!await window.confirmWithSweetAlert('Remove this payment?')) return;
         try {
             const res = await axios.post(`${baseUrl}/api/cashier/remove-payment.php?id=${currentStatementId}&payment_id=${paymentId}`);
             if (res.data.success) {

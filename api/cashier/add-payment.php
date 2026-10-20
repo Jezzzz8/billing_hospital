@@ -1,7 +1,7 @@
 <?php
-
 require_once __DIR__ . '/../../config/config.php';
 require_once __DIR__ . '/../../config/connection.php';
+require_once __DIR__ . '/../../includes/ws_notify.php';
 require_once __DIR__ . '/../../controllers/CashierController.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -30,13 +30,24 @@ try {
     $stmt->execute([$id]);
     $row = $stmt->fetch();
 
+    $balance    = $row ? (float)$row['balance_amount'] : 0;
+    $amountPaid = $row ? (float)$row['amount_paid']    : 0;
+    $total      = $row ? (float)$row['total_amount']   : 0;
+
+    ws_broadcast('billing.payment.added', [
+        'statement_id' => $id,
+        'reference'    => $reference,
+        'new_balance'  => $balance,
+        'amount_paid'  => $amountPaid,
+    ], [1, 4]);
+
     echo json_encode([
         'success'      => true,
         'message'      => 'Payment recorded.',
         'reference'    => $reference,
-        'new_balance'  => $row ? (float)$row['balance_amount'] : 0,
-        'amount_paid'  => $row ? (float)$row['amount_paid'] : 0,
-        'total_amount' => $row ? (float)$row['total_amount'] : 0,
+        'new_balance'  => $balance,
+        'amount_paid'  => $amountPaid,
+        'total_amount' => $total,
     ]);
 } catch (Throwable $e) {
     $status = in_array($e->getCode(), [400, 404, 409, 422], true) ? $e->getCode() : 500;

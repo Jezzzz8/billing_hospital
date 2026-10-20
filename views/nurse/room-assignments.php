@@ -12,9 +12,15 @@ if ($admission && preg_match('/Preferred room type:\s*([^\.\r\n]+)/', (string)($
     $preferredRoomTypeName = trim($matches[1]);
 }
 
-if ($admission && (int)($admission['status_id'] ?? 0) === 2) {
-    header('Location: ' . BASE_URL . '/index.php?page=nurse-admissions');
-    exit;
+if ($admission && (strcasecmp((string)($admission['status_name'] ?? ''), 'Discharged') === 0
+    || !empty($admission['discharge_datetime']))) {
+    ?>
+    <div class="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+        <h1 class="font-semibold">This admission has been discharged</h1>
+        <p class="mt-1">Room assignment management is disabled for discharged admissions. The patient's previous room assignment remains in their history.</p>
+    </div>
+    <?php
+    return;
 }
 
 $currentAssignment = null;
@@ -536,7 +542,7 @@ if (!$admission) {
     document.querySelectorAll('.remove-doctor-btn').forEach(btn => {
         btn.addEventListener('click', async function() {
             const name = this.dataset.doctorName;
-            if (!confirm(`Remove ${name} from this admission?\n\nThey will no longer see this patient on their dashboard.`)) return;
+            if (!await window.confirmWithSweetAlert(`Remove ${name} from this admission?\n\nThey will no longer see this patient on their dashboard.`)) return;
 
             const id = this.dataset.admissionDoctorId;
             this.disabled = true;
@@ -588,7 +594,7 @@ if (!$admission) {
                 return;
             }
 
-            if (!confirm(`Assign Room ${this.dataset.roomNumber} to this patient?`)) return;
+            if (!await window.confirmWithSweetAlert(`Assign Room ${this.dataset.roomNumber} to this patient?`)) return;
 
             const roomId = this.dataset.roomId;
             this.style.opacity = '0.5';

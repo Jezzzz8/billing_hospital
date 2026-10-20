@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/ChargeSyncService.php';
+require_once __DIR__ . '/../includes/ws_notify.php';
 
 class CashierController
 {
@@ -398,12 +399,15 @@ class CashierController
         if ($itemId <= 0 || $quantity <= 0) throw new Exception('Invalid charge data.');
 
         $stmt = $this->pdo->prepare(
-            'SELECT charge_item_id, default_price, item_name FROM `charge_item`
+            'SELECT charge_item_id, default_price, item_name, is_stockable FROM `charge_item`
             WHERE charge_item_id = ? AND is_active = 1 LIMIT 1'
         );
         $stmt->execute([$itemId]);
         $item = $stmt->fetch();
         if (!$item) throw new Exception('Charge item not found or inactive.');
+        if ((int)$item['is_stockable'] === 1) {
+            throw new RuntimeException('Stockable medicine charges must be recorded through Pharmacy fulfillment or POS.', 409);
+        }
 
         $price = isset($data['actual_price']) && is_numeric($data['actual_price'])
             ? (float)$data['actual_price']
@@ -430,6 +434,8 @@ class CashierController
         ]);
 
         (new ChargeSyncService($this->pdo))->syncStatement($statementId);
+
+        ws_broadcast('billing.charge.added', ['statement_id' => $statementId], [1, 4]);
     }
 
     public function removeCharge(int $statementId, int $chargeId): void
@@ -455,6 +461,8 @@ class CashierController
         $stmt->execute([$chargeId, $statementId]);
 
         (new ChargeSyncService($this->pdo))->syncStatement($statementId);
+
+        ws_broadcast('billing.charge.removed', ['statement_id' => $statementId, 'charge_id' => $chargeId], [1, 4]);
     }
 
     public function addPayment(int $statementId, array $data): string
@@ -519,6 +527,13 @@ class CashierController
             (new ChargeSyncService($this->pdo))->syncStatement($statementId);
 
             $this->pdo->commit();
+
+            ws_broadcast('billing.payment.added', [
+                'statement_id' => $statementId,
+                'reference'    => $reference,
+                'amount'       => $amount,
+            ], [1, 4]);
+
             return $reference;
         } catch (Throwable $e) {
             $this->pdo->rollBack();
@@ -534,6 +549,8 @@ class CashierController
         $stmt->execute([$paymentId, $statementId]);
 
         (new ChargeSyncService($this->pdo))->syncStatement($statementId);
+
+        ws_broadcast('billing.payment.removed', ['statement_id' => $statementId, 'payment_id' => $paymentId], [1, 4]);
     }
 
     private function generatePaymentReference(): string
@@ -659,6 +676,9 @@ class CashierController
 
             (new ChargeSyncService($this->pdo))->recomputeStatement($statementId);
             $this->pdo->commit();
+
+            ws_broadcast('billing.statement.updated', ['statement_id' => $statementId], [1, 4]);
+
             $this->json(200, ['success' => true, 'message' => 'Statement deductions updated.']);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) $this->pdo->rollBack();

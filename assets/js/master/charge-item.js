@@ -85,6 +85,11 @@ document.addEventListener("spa:page-loaded", async (event) => {
       document.getElementById("charge_item_id").value = "";
       document.getElementById("is_taxable").checked = false;
       document.getElementById("requires_doctor_order").checked = false;
+      document.getElementById("is_stockable").checked = false;
+      document.getElementById("stock_quantity").value = "0";
+      document.getElementById("stockQuantityLabel").textContent = "Opening stock";
+      document.getElementById("stock_quantity").min = "0";
+      document.getElementById("stock_quantity").placeholder = "0";
       modalTitle.textContent = "New Charge Item";
       submitLbl.textContent = "Create Charge Item";
       openModal(modal);
@@ -115,6 +120,12 @@ document.addEventListener("spa:page-loaded", async (event) => {
         parseInt(i.is_taxable, 10) === 1;
       document.getElementById("requires_doctor_order").checked =
         parseInt(i.requires_doctor_order, 10) === 1;
+      document.getElementById("is_stockable").checked =
+        parseInt(i.is_stockable, 10) === 1;
+      document.getElementById("stockQuantityLabel").textContent = "Stock adjustment (+/-)";
+      document.getElementById("stock_quantity").value = "0";
+      document.getElementById("stock_quantity").min = "";
+      document.getElementById("stock_quantity").placeholder = "e.g. 25 or -3";
 
       openModal(modal);
     });
@@ -140,7 +151,13 @@ document.addEventListener("spa:page-loaded", async (event) => {
         .checked
         ? 1
         : 0,
+      is_stockable: document.getElementById("is_stockable").checked ? 1 : 0,
     };
+    if (isEdit) {
+      payload.stock_adjustment = document.getElementById("stock_quantity").value || "0";
+    } else {
+      payload.stock_quantity = document.getElementById("stock_quantity").value || "0";
+    }
 
     const url = isEdit
       ? `${baseUrl}/api/admin.php?resource=charge-items&operation=update&id=${id}`

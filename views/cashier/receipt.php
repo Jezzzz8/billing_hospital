@@ -6,7 +6,7 @@ require_once __DIR__ . '/../../controllers/ChargeSyncService.php';
 $controller = new CashierController($pdo);
 $statementId = (int)($_GET['id'] ?? 0);
 
-if ($statementId > 0) {
+if ($statementId > 0 && empty($patientPortalMode)) {
     try {
         (new ChargeSyncService($pdo))->syncStatement($statementId);
     } catch (Throwable $e) {
@@ -447,13 +447,21 @@ usort($detailRows, function ($a, $b) {
     }
 </style>
 
-<div class="mb-6 flex justify-between items-center max-w-4xl mx-auto print:hidden">
+<div <?= !empty($patientPortalMode) ? 'id="patientStatementActions"' : '' ?> class="mb-6 flex justify-between items-center max-w-4xl mx-auto print:hidden">
     <div>
         <h1 class="text-xl font-bold text-slate-800">Statement Preview</h1>
         <p class="text-xs text-slate-500">Statement #<?= (int)$statement['statement_id'] ?></p>
     </div>
     <div class="flex items-center gap-2">
-        <?php if ((int)$roleId === 1): ?>
+        <?php if (!empty($patientPortalMode)): ?>
+            <a href="<?= BASE_URL ?>/patient-portal.php"
+               class="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+                </svg>
+                Back to Patient Portal
+            </a>
+        <?php elseif ((int)$roleId === 1): ?>
             <a href="<?= BASE_URL ?>/index.php?page=billing"
                class="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -469,6 +477,12 @@ usort($detailRows, function ($a, $b) {
                 </svg>
                 Back to Statements
             </a>
+        <?php endif; ?>
+        <?php if (!empty($patientPortalMode)): ?>
+            <button id="downloadPatientStatement" type="button"
+                    class="inline-flex items-center gap-2 rounded border border-blue-200 bg-white px-4 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50">
+                Download Statement
+            </button>
         <?php endif; ?>
         <button type="button" onclick="window.print()"
                 class="inline-flex items-center gap-2 rounded bg-slate-800 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700">
@@ -491,7 +505,11 @@ usort($detailRows, function ($a, $b) {
     <div class="grid grid-cols-2 gap-x-8 gap-y-1 mb-4 text-[11px] uppercase">
         <div class="space-y-1">
             <div class="flex"><span class="w-36 ink-label">CASE NO</span><span class="ink-soft">: <?= sprintf('%010d', $statement['admission_id']) ?></span></div>
-            <div class="flex"><span class="w-36 ink-label">PATIENT NO</span><span class="ink-soft">: <?= sprintf('%010d', $statement['patient_id'] ?? $statement['statement_id']) ?></span></div>
+            <?php if (!empty($patientPortalMode)): ?>
+                <div class="flex"><span class="w-36 ink-label">DATE OF BIRTH</span><span class="ink-soft">: <?= !empty($statement['birth_date']) ? htmlspecialchars(date('M j Y', strtotime($statement['birth_date']))) : '—' ?></span></div>
+            <?php else: ?>
+                <div class="flex"><span class="w-36 ink-label">PATIENT NO</span><span class="ink-soft">: <?= sprintf('%010d', $statement['patient_id'] ?? $statement['statement_id']) ?></span></div>
+            <?php endif; ?>
             <div class="flex text-sm leading-none py-0.5">
                 <span class="w-36 ink-label">PATIENT NAME</span>
                 <span class="ink-strong">: <?= htmlspecialchars($patientName) ?></span>

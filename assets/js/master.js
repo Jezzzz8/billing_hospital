@@ -28,7 +28,7 @@ async function mountCurrentMasterPage(event) {
     if (page === 'room') {
         try {
             const baseUrl = document.body.dataset.baseUrl || '';
-            const mod = await import(baseUrl + '/assets/js/room.js');
+            const mod = await import(baseUrl + '/assets/js/master/room.js');
             if (typeof mod.initRoomPage === 'function') {
                 await mod.initRoomPage(event);
             }

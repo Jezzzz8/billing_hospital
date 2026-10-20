@@ -1,7 +1,7 @@
 <?php
-
 require_once __DIR__ . '/../../config/config.php';
 require_once __DIR__ . '/../../config/connection.php';
+require_once __DIR__ . '/../../includes/ws_notify.php';
 require_once __DIR__ . '/../../controllers/NurseController.php';
 
 header('Content-Type: application/json; charset=utf-8');
@@ -22,8 +22,5 @@ try {
 } catch (Throwable $e) {
     error_log('[api/nurses/discharge] ' . $e->getMessage());
     http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Server error: ' . $e->getMessage(),
-    ]);
+    echo json_encode(['success' => false, 'message' => 'Server error: ' . $e->getMessage()]);
 }

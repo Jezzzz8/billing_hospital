@@ -101,8 +101,8 @@ require __DIR__ . '/partials/header.php';
                 </button>
             </form>
 
-            <p class="mt-10 text-center text-xs text-slate-400 lg:hidden">
-               
+            <p class="mt-6 text-center text-sm text-slate-500">
+                Patient? <a href="<?= BASE_URL ?>/patient-portal.php" class="font-semibold text-blue-700 hover:text-blue-800">Open the patient portal</a>
             </p>
         </div>
     </div>

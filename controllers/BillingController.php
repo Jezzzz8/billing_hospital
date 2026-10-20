@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/ChargeSyncService.php';
+require_once __DIR__ . '/../includes/ws_notify.php';
 
 class BillingController
 {
@@ -147,6 +148,8 @@ class BillingController
 
             $this->pdo->commit();
 
+            ws_broadcast('billing.statement.updated', ['statement_id' => $id], [1, 4]);
+
             $this->json(200, ['success' => true, 'message' => 'Statement updated successfully.']);
         } catch (Throwable $e) {
             $this->pdo->rollBack();
@@ -177,6 +180,7 @@ class BillingController
 
         $stmt = $this->pdo->prepare(
             'SELECT ci.charge_item_id, ci.default_price, ci.item_name, ci.is_taxable,
+                    ci.is_stockable,
                     cc.is_recurring
              FROM `charge_item` ci
              INNER JOIN `charge_category` cc ON cc.category_id = ci.category_id
@@ -185,6 +189,12 @@ class BillingController
         $stmt->execute([$itemId]);
         $item = $stmt->fetch();
         if (!$item) $this->json(404, ['success' => false, 'message' => 'Charge item not found or inactive.']);
+        if ((int)$item['is_stockable'] === 1) {
+            $this->json(409, [
+                'success' => false,
+                'message' => 'Stockable medicine charges must be recorded through Pharmacy fulfillment or POS.',
+            ]);
+        }
 
         $price = isset($data['actual_price']) && is_numeric($data['actual_price'])
             ? (float)$data['actual_price']
@@ -214,6 +224,9 @@ class BillingController
             (new ChargeSyncService($this->pdo))->recomputeStatement($id);
 
             $this->pdo->commit();
+
+            ws_broadcast('billing.charge.added', ['statement_id' => $id], [1, 4]);
+
             $this->json(201, ['success' => true, 'message' => 'Charge added.']);
         } catch (Throwable $e) {
             $this->pdo->rollBack();
@@ -253,6 +266,9 @@ class BillingController
             (new ChargeSyncService($this->pdo))->recomputeStatement($statementId);
 
             $this->pdo->commit();
+
+            ws_broadcast('billing.charge.removed', ['statement_id' => $statementId, 'charge_id' => $chargeId], [1, 4]);
+
             $this->json(200, ['success' => true, 'message' => 'Charge removed.']);
         } catch (Throwable $e) {
             $this->pdo->rollBack();
@@ -316,6 +332,12 @@ class BillingController
 
             $this->pdo->commit();
 
+            ws_broadcast('billing.payment.added', [
+                'statement_id' => $id,
+                'reference'    => $reference,
+                'amount'       => $amount,
+            ], [1, 4]);
+
             $this->json(201, [
                 'success'   => true,
                 'message'   => 'Payment recorded.',
@@ -369,6 +391,9 @@ class BillingController
             (new ChargeSyncService($this->pdo))->recomputeStatement($statementId);
 
             $this->pdo->commit();
+
+            ws_broadcast('billing.payment.removed', ['statement_id' => $statementId, 'payment_id' => $paymentId], [1, 4]);
+
             $this->json(200, ['success' => true, 'message' => 'Payment removed.']);
         } catch (Throwable $e) {
             $this->pdo->rollBack();

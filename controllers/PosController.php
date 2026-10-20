@@ -10,7 +10,7 @@ class PosController
     {
         return $this->pdo->query(
             'SELECT ci.charge_item_id, ci.item_code, ci.item_name, ci.default_price,
-                    ci.is_taxable, ci.unit_of_measure,
+                    ci.is_taxable, ci.unit_of_measure, ci.is_stockable, ci.stock_quantity,
                     cc.category_id, cc.category_name
              FROM `charge_item` ci
              INNER JOIN `charge_category` cc ON cc.category_id = ci.category_id
@@ -161,8 +161,8 @@ class PosController
             $insertCharge = $this->pdo->prepare(
                 'INSERT INTO `charge`
                     (statement_id, charge_item_id, quantity, actual_price,
-                    charge_datetime, processed_by_user_id, notes)
-                VALUES (?, ?, ?, ?, NOW(), ?, ?)'
+                    charge_datetime, processed_by_user_id, notes, source_type)
+                VALUES (?, ?, ?, ?, NOW(), ?, ?, "POS")'
             );
 
             $resolvedItems = [];
@@ -173,8 +173,11 @@ class PosController
                 if ($ciId <= 0 || $qty <= 0) continue;
 
                 $stmt = $this->pdo->prepare(
-                    'SELECT charge_item_id, default_price, is_taxable, item_name
-                    FROM `charge_item` WHERE charge_item_id = ? AND is_active = 1 LIMIT 1'
+                    'SELECT charge_item_id, default_price, is_taxable, item_name,
+                           is_stockable, stock_quantity
+                    FROM `charge_item`
+                    WHERE charge_item_id = ? AND is_active = 1
+                    LIMIT 1 FOR UPDATE'
                 );
                 $stmt->execute([$ciId]);
                 $ci = $stmt->fetch();
@@ -190,11 +193,29 @@ class PosController
                     $userId,
                     'POS sale',
                 ]);
+                $chargeId = (int)$this->pdo->lastInsertId();
+
+                if ((int)$ci['is_stockable'] === 1) {
+                    $stock = $this->pdo->prepare(
+                        'UPDATE `charge_item`
+                         SET stock_quantity = stock_quantity - ?
+                         WHERE charge_item_id = ? AND is_stockable = 1 AND stock_quantity >= ?'
+                    );
+                    $stock->execute([$qty, $ciId, $qty]);
+                    if ($stock->rowCount() !== 1) {
+                        throw new RuntimeException(
+                            'Insufficient stock for ' . $ci['item_name'] . '. Available: '
+                            . (int)$ci['stock_quantity'] . ', requested: ' . $qty . '.',
+                            409
+                        );
+                    }
+                }
 
                 $resolvedItems[] = [
                     'charge_item_id' => $ciId,
                     'quantity'       => $qty,
                     'unit_price'     => $unitPrice,
+                    'charge_id'      => $chargeId,
                 ];
             }
 
@@ -277,7 +298,11 @@ class PosController
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) $this->pdo->rollBack();
             error_log('[PosController::createSale] ' . $e->getMessage());
-            $this->json(500, ['success' => false, 'message' => 'Could not record sale: ' . $e->getMessage()]);
+            $status = in_array($e->getCode(), [400, 403, 404, 409, 422], true) ? (int)$e->getCode() : 500;
+            $this->json($status, [
+                'success' => false,
+                'message' => $status === 500 ? 'Could not record sale.' : $e->getMessage(),
+            ]);
         }
     }
 

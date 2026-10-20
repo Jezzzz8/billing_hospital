@@ -232,7 +232,9 @@ if (!$admission) {
             });
             if (res.data.success) {
                 showAlert('success', res.data.message);
-                setTimeout(() => location.reload(), 800);
+                setTimeout(() => window.refreshCurrentPage().catch(error => {
+                    console.error('Could not refresh the diagnosis page.', error);
+                }), 800);
             }
         } catch (err) {
             showAlert('error', err.response?.data?.message || 'Could not save diagnosis.');
@@ -243,7 +245,7 @@ if (!$admission) {
 
     document.querySelectorAll('.remove-diagnosis-btn').forEach(btn => {
         btn.addEventListener('click', async function() {
-            if (!confirm('Remove this diagnosis?')) return;
+            if (!await window.confirmWithSweetAlert('Remove this diagnosis?')) return;
             const id = this.dataset.id;
             try {
                 const res = await axios.post(`${baseUrl}/api/doctors/remove-diagnosis.php?id=${id}`);

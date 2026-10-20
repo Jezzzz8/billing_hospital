@@ -1,7 +1,12 @@
 const mainContentSelector = "main";
 const cashierPage = page => page === "cashier" || page.startsWith("cashier-");
+const loadedPageScripts = new Set();
 let navigationController;
 let pageController = new AbortController();
+
+if (document.body.dataset.pageScript) {
+    loadedPageScripts.add(new URL(document.body.dataset.pageScript, location.origin).href);
+}
 
 function dispatchPageLoaded(page) {
     pageController.abort();
@@ -36,6 +41,36 @@ function updateNavigation(page, title) {
     });
 }
 
+function executeInlineScripts(container) {
+    container.querySelectorAll("script:not([src])").forEach(original => {
+        const script = document.createElement("script");
+        for (const attribute of original.attributes) {
+            script.setAttribute(attribute.name, attribute.value);
+        }
+        script.textContent = original.textContent;
+        original.replaceWith(script);
+    });
+}
+
+async function ensurePageScript(scriptUrl, isModule) {
+    if (!scriptUrl) return;
+    const url = new URL(scriptUrl, location.origin).href;
+    if (loadedPageScripts.has(url)) return;
+
+    if (isModule) {
+        await import(url);
+    } else {
+        await new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = url;
+            script.onload = resolve;
+            script.onerror = () => reject(new Error(`Could not load page script: ${url}`));
+            document.body.append(script);
+        });
+    }
+    loadedPageScripts.add(url);
+}
+
 async function loadPage(url, addHistory = true) {
     navigationController?.abort();
     navigationController = new AbortController();
@@ -67,31 +102,40 @@ async function loadPage(url, addHistory = true) {
     }
 
     main.innerHTML = await response.text();
+    executeInlineScripts(main);
     const page = decodeURIComponent(pageHeader);
     const title = decodeURIComponent(titleHeader);
     updateNavigation(page, title);
 
     const scriptUrl = response.headers.get("X-Page-Script");
-    if (scriptUrl) {
-        try {
-            await import(new URL(scriptUrl, location.origin).href);
-        } catch (error) {
-            if (signal.aborted) return;
-            console.error("Could not load the page module.", error);
-            location.assign(url.href);
-            return;
-        }
+    const scriptIsModule = response.headers.get("X-Page-Module") === "1";
+    try {
+        await ensurePageScript(scriptUrl, scriptIsModule);
+    } catch (error) {
+        if (signal.aborted) return;
+        console.error("Could not load the page script.", error);
+        location.assign(url.href);
+        return;
     }
     if (signal.aborted) return;
 
+    document.body.dataset.pageScript = scriptUrl || "";
+    document.body.dataset.pageModule = scriptIsModule ? "1" : "0";
     if (addHistory) {
         url.searchParams.delete("partial");
         history.pushState({}, "", url.href);
     }
 
     dispatchPageLoaded(page);
-    window.scrollTo(0, 0);
+    if (addHistory) window.scrollTo(0, 0);
 }
+
+window.refreshCurrentPage = async () => {
+    const scrollY = window.scrollY;
+    await loadPage(new URL(location.href), false);
+    window.scrollTo(0, scrollY);
+};
+window.refreshAdminList = window.refreshCurrentPage;
 
 document.addEventListener("click", event => {
     const anchor = event.target.closest("a[href]");

@@ -1,12 +1,37 @@
 <?php
 
 require_once __DIR__ . '/BillingHook.php';
+require_once __DIR__ . '/ChargeSyncService.php';
+require_once __DIR__ . '/../includes/ws_notify.php';
 
 class NurseController
 {
     private PDO $pdo;
 
     public function __construct(PDO $pdo) { $this->pdo = $pdo; }
+
+    private function getAdmissionNotificationContext(int $admissionId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT p.first_name, p.last_name, r.room_number
+             FROM `admission` a
+             INNER JOIN `patient` p ON p.patient_id = a.patient_id
+             LEFT JOIN `room_assignment` ra ON ra.admission_id = a.admission_id
+                AND ra.is_active = 1 AND ra.end_datetime IS NULL
+             LEFT JOIN `room` r ON r.room_id = ra.room_id
+             WHERE a.admission_id = ? LIMIT 1'
+        );
+        $stmt->execute([$admissionId]);
+        $context = $stmt->fetch();
+        if (!$context) {
+            return ['admission_id' => $admissionId];
+        }
+        return [
+            'admission_id' => $admissionId,
+            'patient_name' => trim($context['first_name'] . ' ' . $context['last_name']),
+            'room_number' => $context['room_number'] ?? null,
+        ];
+    }
 
     public function getPendingFulfillmentReceipts(): array
     {
@@ -29,6 +54,7 @@ class NurseController
              LEFT JOIN `service_fulfillment_receipt_item` r
                 ON r.fulfillment_item_id = sfi.fulfillment_item_id
              WHERE sf.status = "Completed"
+               AND (sr.notes IS NULL OR sr.notes NOT LIKE "MED_RETURN:%")
              GROUP BY sfi.fulfillment_item_id, sfi.quantity_fulfilled, sfi.unit_price,
                       sfi.fulfilled_datetime, ci.item_name, ci.item_code, ci.unit_of_measure,
                       cc.category_name, sf.fulfillment_id, sf.fulfillment_datetime,
@@ -60,14 +86,18 @@ class NurseController
         try {
             $stmt = $this->pdo->prepare(
                 'SELECT sfi.fulfillment_item_id, sfi.quantity_fulfilled,
-                        sfi.unit_price, sfi.charge_item_id,
-                        sr.admission_id, ci.item_name
+                        sfi.unit_price, sfi.charge_item_id, ci.is_stockable,
+                        sr.admission_id, ci.item_name,
+                        p.first_name, p.last_name
                  FROM `service_fulfillment_item` sfi
                  INNER JOIN `service_fulfillment` sf ON sf.fulfillment_id = sfi.fulfillment_id
                  INNER JOIN `service_request_item` sri ON sri.request_item_id = sfi.request_item_id
                  INNER JOIN `service_request` sr ON sr.request_id = sri.request_id
+                 INNER JOIN `admission` a ON a.admission_id = sr.admission_id
+                 INNER JOIN `patient` p ON p.patient_id = a.patient_id
                  INNER JOIN `charge_item` ci ON ci.charge_item_id = sfi.charge_item_id
                  WHERE sfi.fulfillment_item_id = ? AND sf.status = "Completed"
+                   AND (sr.notes IS NULL OR sr.notes NOT LIKE "MED_RETURN:%")
                  LIMIT 1 FOR UPDATE'
             );
             $stmt->execute([$fulfillmentItemId]);
@@ -98,27 +128,441 @@ class NurseController
             );
             $stmt->execute([$fulfillmentItemId, $quantity, $userId]);
 
-            $stmt = $this->pdo->prepare(
-                'SELECT statement_id FROM `billing_statement`
-                 WHERE admission_id = ? LIMIT 1 FOR UPDATE'
-            );
-            $stmt->execute([(int)$item['admission_id']]);
-            $statementId = (int)$stmt->fetchColumn();
-            if ($statementId <= 0) {
-                throw new RuntimeException('A billing statement is required before receiving a fulfilled item.', 409);
+            if ((int)$item['is_stockable'] === 1) {
+                $stmt = $this->pdo->prepare(
+                    'UPDATE `service_fulfillment_item`
+                     SET quantity_remaining = quantity_remaining + ?
+                     WHERE fulfillment_item_id = ?'
+                );
+                $stmt->execute([$quantity, $fulfillmentItemId]);
+
+                $stmt = $this->pdo->prepare(
+                    'SELECT COUNT(*) FROM `service_fulfillment_intake_log`
+                     WHERE fulfillment_item_id = ?'
+                );
+                $stmt->execute([$fulfillmentItemId]);
+                $hasIntakeHistory = (int)$stmt->fetchColumn() > 0;
+                if ($alreadyReceived === 0 || $hasIntakeHistory) {
+                    $eventType = $alreadyReceived === 0 ? 'Starting Balance' : 'Received';
+                    $stmt = $this->pdo->prepare(
+                        'INSERT INTO `service_fulfillment_intake_log`
+                            (fulfillment_item_id, event_type, quantity, recorded_by_user_id)
+                         VALUES (?, ?, ?, ?)'
+                    );
+                    $stmt->execute([$fulfillmentItemId, $eventType, $quantity, $userId]);
+                }
             }
 
-            (new ChargeSyncService($this->pdo))->syncStatement($statementId);
             $this->pdo->commit();
+
+            ws_broadcast('fulfillment.received', [
+                'fulfillment_item_id' => $fulfillmentItemId,
+                'admission_id' => (int)$item['admission_id'],
+                'patient_name' => trim($item['first_name'] . ' ' . $item['last_name']),
+                'item_name' => $item['item_name'],
+                'quantity_received' => $quantity,
+            ], [1, 2, 3, 5]);
 
             return [
                 'success' => true,
-                'message' => 'Received ' . $quantity . ' ' . $item['item_name'] . '; the billing statement has been updated.',
-                'statement_id' => $statementId,
+                'message' => 'Received ' . $quantity . ' ' . $item['item_name'] . '.',
             ];
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) $this->pdo->rollBack();
             throw $e;
+        }
+    }
+
+    public function getMedicineIntakes(): array
+    {
+        $stmt = $this->pdo->query(
+            'SELECT sfi.fulfillment_item_id, sfi.quantity_fulfilled,
+                    CASE
+                        WHEN COALESCE(intake_logs.event_count, 0) = 0 THEN "Needs Reconciliation"
+                        WHEN sfi.quantity_remaining = 0 THEN "Completed"
+                        WHEN COALESCE(intake_logs.quantity_administered, 0) > 0
+                             OR sfi.quantity_remaining < COALESCE(receipts.quantity_received, 0) THEN "In Progress"
+                        ELSE "Not Started"
+                    END AS intake_status,
+                    sfi.quantity_remaining,
+                    COALESCE(receipts.quantity_received, 0) AS quantity_received,
+                    COALESCE(intake_logs.quantity_administered, 0) AS quantity_administered,
+                    ci.item_name, ci.item_code, ci.unit_of_measure,
+                    sr.request_id, sr.admission_id,
+                    p.first_name, p.last_name, ast.status_name AS admission_status
+             FROM `service_fulfillment_item` sfi
+             INNER JOIN `service_fulfillment` sf ON sf.fulfillment_id = sfi.fulfillment_id
+             INNER JOIN `service_request_item` sri ON sri.request_item_id = sfi.request_item_id
+             INNER JOIN `service_request` sr ON sr.request_id = sri.request_id
+             INNER JOIN `department` d ON d.department_id = sr.department_id
+             INNER JOIN `admission` a ON a.admission_id = sr.admission_id
+             INNER JOIN `admission_status` ast ON ast.status_id = a.status_id
+             INNER JOIN `patient` p ON p.patient_id = a.patient_id
+             INNER JOIN `charge_item` ci ON ci.charge_item_id = sfi.charge_item_id
+             LEFT JOIN (
+                 SELECT fulfillment_item_id, SUM(quantity_received) AS quantity_received
+                 FROM `service_fulfillment_receipt_item`
+                 GROUP BY fulfillment_item_id
+             ) receipts ON receipts.fulfillment_item_id = sfi.fulfillment_item_id
+             LEFT JOIN (
+                 SELECT fulfillment_item_id,
+                        COUNT(*) AS event_count,
+                        SUM(CASE WHEN event_type = "Administered" THEN quantity ELSE 0 END) AS quantity_administered
+                 FROM `service_fulfillment_intake_log`
+                 GROUP BY fulfillment_item_id
+             ) intake_logs ON intake_logs.fulfillment_item_id = sfi.fulfillment_item_id
+             WHERE sf.status = "Completed"
+               AND d.department_code = "PHARM"
+               AND ci.is_stockable = 1
+               AND (sr.notes IS NULL OR sr.notes NOT LIKE "MED_RETURN:%")
+               AND ast.status_name IN ("Admitted", "Transferred", "Ready for Discharge")
+               AND COALESCE(receipts.quantity_received, 0) > 0
+             ORDER BY p.last_name, p.first_name, sr.admission_id, ci.item_name'
+        );
+        $items = $stmt->fetchAll();
+        if (!$items) {
+            return [];
+        }
+
+        $itemIds = array_map(static fn(array $item): int => (int)$item['fulfillment_item_id'], $items);
+        $placeholders = implode(',', array_fill(0, count($itemIds), '?'));
+        $historyStmt = $this->pdo->prepare(
+            'SELECT log.fulfillment_item_id, log.event_type, log.quantity, log.notes,
+                    log.recorded_datetime, u.first_name, u.last_name
+             FROM `service_fulfillment_intake_log` log
+             LEFT JOIN `user` u ON u.user_id = log.recorded_by_user_id
+             WHERE log.fulfillment_item_id IN (' . $placeholders . ')
+             ORDER BY log.recorded_datetime DESC, log.intake_log_id DESC'
+        );
+        $historyStmt->execute($itemIds);
+        $historyByItem = [];
+        foreach ($historyStmt->fetchAll() as $event) {
+            $historyByItem[(int)$event['fulfillment_item_id']][] = $event;
+        }
+        foreach ($items as &$item) {
+            $item['intake_events'] = $historyByItem[(int)$item['fulfillment_item_id']] ?? [];
+        }
+        unset($item);
+
+        return $items;
+    }
+
+    public function recordMedicineDose(): array
+    {
+        $data = $this->input();
+        $itemId = filter_var($data['fulfillment_item_id'] ?? null, FILTER_VALIDATE_INT);
+        $quantity = filter_var($data['quantity_administered'] ?? null, FILTER_VALIDATE_INT);
+        $notes = trim((string)($data['notes'] ?? ''));
+
+        if ($itemId === false || $itemId <= 0 || $quantity === false || $quantity <= 0) {
+            throw new RuntimeException('Select an item and enter a positive whole-number dose quantity.', 422);
+        }
+        if (strlen($notes) > 500) {
+            throw new RuntimeException('Dose notes cannot exceed 500 characters.', 422);
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $item = $this->lockMedicineIntakeItem((int)$itemId);
+            $this->assertMedicineIntakeEditable($item);
+            $this->assertNoPendingMedicineReturn((int)$itemId);
+            if ((int)$item['quantity_received'] <= 0) {
+                throw new RuntimeException('Nursing must receive the item before recording doses.', 409);
+            }
+            if ($quantity > (int)$item['quantity_remaining']) {
+                throw new RuntimeException(
+                    'Administered quantity cannot exceed the remaining quantity (' . (int)$item['quantity_remaining'] . ').',
+                    422
+                );
+            }
+
+            $stmt = $this->pdo->prepare(
+                'INSERT INTO `service_fulfillment_intake_log`
+                    (fulfillment_item_id, event_type, quantity, notes, recorded_by_user_id)
+                 VALUES (?, "Administered", ?, ?, ?)'
+            );
+            $stmt->execute([
+                $itemId,
+                $quantity,
+                $notes !== '' ? $notes : null,
+                (int)($_SESSION['user']['user_id'] ?? 0),
+            ]);
+
+            $remaining = (int)$item['quantity_remaining'] - $quantity;
+            $status = $remaining === 0 ? 'Completed' : 'In Progress';
+            $stmt = $this->pdo->prepare(
+                'UPDATE `service_fulfillment_item`
+                 SET quantity_remaining = ?, intake_status = ?
+                 WHERE fulfillment_item_id = ?'
+            );
+            $stmt->execute([$remaining, $status, $itemId]);
+            $this->pdo->commit();
+
+            ws_broadcast('medicine.intake.updated', [
+                'fulfillment_item_id' => (int)$itemId,
+                'admission_id' => (int)$item['admission_id'],
+                'patient_name' => trim(($item['first_name'] ?? '') . ' ' . ($item['last_name'] ?? '')),
+                'item_name' => $item['item_name'] ?? '',
+                'quantity' => $quantity,
+                'intake_status' => $status,
+                'quantity_remaining' => $remaining,
+            ], [1, 2, 3]);
+
+            return ['success' => true, 'message' => 'Dose recorded; remaining quantity and intake status updated.'];
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    public function recordMedicineDosesBatch(): array
+    {
+        $data = $this->input();
+        $entries = $data['items'] ?? null;
+        if (!is_array($entries) || !$entries || count($entries) > 50) {
+            throw new RuntimeException('Enter at least one dose, with no more than 50 medicines per batch.', 422);
+        }
+
+        $normalized = [];
+        $seen = [];
+        foreach ($entries as $entry) {
+            if (!is_array($entry)) {
+                throw new RuntimeException('Each batch dose must include a medicine and quantity.', 422);
+            }
+            $itemId = filter_var($entry['fulfillment_item_id'] ?? null, FILTER_VALIDATE_INT);
+            $quantity = filter_var($entry['quantity_administered'] ?? null, FILTER_VALIDATE_INT);
+            $notes = trim((string)($entry['notes'] ?? ''));
+            if ($itemId === false || $itemId <= 0 || $quantity === false || $quantity <= 0) {
+                throw new RuntimeException('Each batch dose must have a valid medicine and positive whole-number quantity.', 422);
+            }
+            if (isset($seen[$itemId])) {
+                throw new RuntimeException('A medicine can only appear once in a dose batch.', 422);
+            }
+            if (strlen($notes) > 500) {
+                throw new RuntimeException('Dose notes cannot exceed 500 characters.', 422);
+            }
+            $seen[$itemId] = true;
+            $normalized[] = [
+                'fulfillment_item_id' => (int)$itemId,
+                'quantity_administered' => (int)$quantity,
+                'notes' => $notes,
+            ];
+        }
+
+        usort($normalized, static fn(array $a, array $b): int =>
+            $a['fulfillment_item_id'] <=> $b['fulfillment_item_id']
+        );
+        $this->pdo->beginTransaction();
+        try {
+            $updated = [];
+            $batchAdmissionId = null;
+            foreach ($normalized as $entry) {
+                $itemId = $entry['fulfillment_item_id'];
+                $item = $this->lockMedicineIntakeItem($itemId);
+                if ($batchAdmissionId !== null && $batchAdmissionId !== (int)$item['admission_id']) {
+                    throw new RuntimeException('A dose batch can only contain medicines from one admission.', 422);
+                }
+                $batchAdmissionId = (int)$item['admission_id'];
+                $this->assertMedicineIntakeEditable($item);
+                $this->assertNoPendingMedicineReturn($itemId);
+                if ((int)$item['quantity_received'] <= 0) {
+                    throw new RuntimeException('Nursing must receive ' . $item['item_name'] . ' before recording doses.', 409);
+                }
+                $stmt = $this->pdo->prepare(
+                    'SELECT COUNT(*) FROM `service_fulfillment_intake_log`
+                     WHERE fulfillment_item_id = ?'
+                );
+                $stmt->execute([$itemId]);
+                if ((int)$stmt->fetchColumn() === 0) {
+                    throw new RuntimeException('Reconcile the starting quantity for ' . $item['item_name'] . ' before recording a dose.', 409);
+                }
+                if ((int)$item['quantity_remaining'] < (int)$entry['quantity_administered']) {
+                    throw new RuntimeException(
+                        'Dose quantity for ' . $item['item_name'] . ' exceeds its remaining quantity (' . (int)$item['quantity_remaining'] . ').',
+                        422
+                    );
+                }
+
+                $stmt = $this->pdo->prepare(
+                    'INSERT INTO `service_fulfillment_intake_log`
+                        (fulfillment_item_id, event_type, quantity, notes, recorded_by_user_id)
+                     VALUES (?, "Administered", ?, ?, ?)'
+                );
+                $stmt->execute([
+                    $itemId,
+                    $entry['quantity_administered'],
+                    $entry['notes'] !== '' ? $entry['notes'] : null,
+                    (int)($_SESSION['user']['user_id'] ?? 0),
+                ]);
+
+                $remaining = (int)$item['quantity_remaining'] - $entry['quantity_administered'];
+                $status = $remaining === 0 ? 'Completed' : 'In Progress';
+                $stmt = $this->pdo->prepare(
+                    'UPDATE `service_fulfillment_item`
+                     SET quantity_remaining = ?, intake_status = ?
+                     WHERE fulfillment_item_id = ?'
+                );
+                $stmt->execute([$remaining, $status, $itemId]);
+                $updated[] = [
+                    'fulfillment_item_id' => $itemId,
+                    'admission_id' => (int)$item['admission_id'],
+                    'patient_name' => trim($item['first_name'] . ' ' . $item['last_name']),
+                    'item_name' => $item['item_name'],
+                    'quantity' => (int)$entry['quantity_administered'],
+                    'intake_status' => $status,
+                    'quantity_remaining' => $remaining,
+                ];
+            }
+            $this->pdo->commit();
+
+            foreach ($updated as $item) {
+                ws_broadcast('medicine.intake.updated', $item, [1, 2, 3]);
+            }
+            return [
+                'success' => true,
+                'message' => 'Recorded doses for ' . count($updated) . ' medicine' . (count($updated) === 1 ? '' : 's').'.',
+            ];
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    public function reconcileMedicineIntake(): array
+    {
+        $data = $this->input();
+        $itemId = filter_var($data['fulfillment_item_id'] ?? null, FILTER_VALIDATE_INT);
+        $remaining = filter_var($data['quantity_remaining'] ?? null, FILTER_VALIDATE_INT);
+        $notes = trim((string)($data['notes'] ?? ''));
+
+        if ($itemId === false || $itemId <= 0 || $remaining === false || $remaining < 0) {
+            throw new RuntimeException('Select an item and enter a valid whole-number remaining quantity.', 422);
+        }
+        if (strlen($notes) > 500) {
+            throw new RuntimeException('Reconciliation notes cannot exceed 500 characters.', 422);
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            $item = $this->lockMedicineIntakeItem((int)$itemId);
+            $this->assertMedicineIntakeEditable($item);
+            $this->assertNoPendingMedicineReturn((int)$itemId);
+            if ((int)$item['quantity_received'] <= 0) {
+                throw new RuntimeException('Nursing must receive the item before reconciling its quantity.', 409);
+            }
+            if ($remaining > (int)$item['quantity_received']) {
+                throw new RuntimeException(
+                    'Remaining quantity cannot exceed the amount received by nursing (' . (int)$item['quantity_received'] . ').',
+                    422
+                );
+            }
+
+            $stmt = $this->pdo->prepare(
+                'SELECT COUNT(*) FROM `service_fulfillment_intake_log`
+                 WHERE fulfillment_item_id = ? AND event_type = "Administered"'
+            );
+            $stmt->execute([$itemId]);
+            if ((int)$stmt->fetchColumn() > 0) {
+                throw new RuntimeException('Starting quantities can only be reconciled before dose recording begins.', 409);
+            }
+
+            $stmt = $this->pdo->prepare(
+                'INSERT INTO `service_fulfillment_intake_log`
+                    (fulfillment_item_id, event_type, quantity, notes, recorded_by_user_id)
+                 VALUES (?, "Reconciled", ?, ?, ?)'
+            );
+            $stmt->execute([
+                $itemId,
+                $remaining,
+                $notes !== '' ? $notes : null,
+                (int)($_SESSION['user']['user_id'] ?? 0),
+            ]);
+
+            $status = $remaining === 0
+                ? 'Completed'
+                : ($remaining < (int)$item['quantity_received'] ? 'In Progress' : 'Not Started');
+            $stmt = $this->pdo->prepare(
+                'UPDATE `service_fulfillment_item`
+                 SET intake_status = ?, quantity_remaining = ?
+                 WHERE fulfillment_item_id = ?'
+            );
+            $stmt->execute([$status, $remaining, $itemId]);
+            $this->pdo->commit();
+
+            ws_broadcast('medicine.intake.updated', [
+                'fulfillment_item_id' => (int)$itemId,
+                'admission_id' => (int)$item['admission_id'],
+                'patient_name' => trim($item['first_name'] . ' ' . $item['last_name']),
+                'item_name' => $item['item_name'],
+                'quantity_remaining' => (int)$remaining,
+                'intake_status' => $status,
+            ], [1, 2, 3]);
+
+            return ['success' => true, 'message' => 'Starting quantity reconciled. Future remaining quantities will update from recorded doses.'];
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    private function lockMedicineIntakeItem(int $itemId): array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT sfi.quantity_fulfilled, sfi.quantity_remaining, ci.item_name,
+                    COALESCE((
+                        SELECT SUM(receipt.quantity_received)
+                        FROM `service_fulfillment_receipt_item` receipt
+                        WHERE receipt.fulfillment_item_id = sfi.fulfillment_item_id
+                    ), 0) AS quantity_received,
+                    sr.admission_id, ast.status_name AS admission_status,
+                    p.first_name, p.last_name
+             FROM `service_fulfillment_item` sfi
+             INNER JOIN `service_fulfillment` sf ON sf.fulfillment_id = sfi.fulfillment_id
+             INNER JOIN `service_request_item` sri ON sri.request_item_id = sfi.request_item_id
+             INNER JOIN `service_request` sr ON sr.request_id = sri.request_id
+             INNER JOIN `department` d ON d.department_id = sr.department_id
+             INNER JOIN `admission` a ON a.admission_id = sr.admission_id
+             INNER JOIN `patient` p ON p.patient_id = a.patient_id
+             INNER JOIN `admission_status` ast ON ast.status_id = a.status_id
+             INNER JOIN `charge_item` ci ON ci.charge_item_id = sfi.charge_item_id
+             WHERE sfi.fulfillment_item_id = ? AND sf.status = "Completed"
+               AND d.department_code = "PHARM" AND ci.is_stockable = 1
+               AND (sr.notes IS NULL OR sr.notes NOT LIKE "MED_RETURN:%")
+             LIMIT 1 FOR UPDATE'
+        );
+        $stmt->execute([$itemId]);
+        $item = $stmt->fetch();
+        if (!$item) {
+            throw new RuntimeException('Pharmacy fulfillment item not found.', 404);
+        }
+        return $item;
+    }
+
+    private function assertMedicineIntakeEditable(array $item): void
+    {
+        if (!in_array($item['admission_status'], ['Admitted', 'Transferred'], true)) {
+            throw new RuntimeException('Medicine intake can no longer be changed after discharge readiness.', 409);
+        }
+    }
+
+    private function assertNoPendingMedicineReturn(int $itemId): void
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT COALESCE(SUM(GREATEST(sri_return.quantity_requested - sri_return.quantity_fulfilled, 0)), 0)
+             FROM `service_request` sr_return
+             INNER JOIN `service_request_item` sri_return ON sri_return.request_id = sr_return.request_id
+             WHERE sr_return.notes LIKE CONCAT("MED_RETURN:", ?, "|%")
+               AND sr_return.status IN ("Pending", "In Progress")'
+        );
+        $stmt->execute([$itemId]);
+        if ((int)$stmt->fetchColumn() > 0) {
+            throw new RuntimeException('A Pharmacy return is already pending for this item.', 409);
         }
     }
 
@@ -276,7 +720,7 @@ class NurseController
              FROM `admission` a
              INNER JOIN `admission_status` ast ON ast.status_id = a.status_id
              WHERE a.patient_id = ? AND a.status_id IN ($placeholders)
-             ORDER BY a.admission_datetime DESC LIMIT 1"
+             ORDER BY a.admission_datetime DESC, a.admission_id DESC LIMIT 1"
         );
         $stmt->execute(array_merge([$patientId], $activeIds));
         $patient['current_admission'] = $stmt->fetch() ?: null;
@@ -287,7 +731,7 @@ class NurseController
     public function getPatientByAdmission(int $admissionId): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT a.admission_id, a.status_id, a.admission_datetime, a.chief_complaint,
+            'SELECT a.admission_id, a.status_id, a.admission_datetime, a.discharge_datetime, a.chief_complaint,
                     a.admission_type, a.notes, a.total_room_transfers,
                     p.patient_id, p.first_name, p.last_name, p.birth_date,
                     p.contact_number, p.email, p.address,
@@ -330,6 +774,11 @@ class NurseController
             ]);
 
             $patientId = (int)$this->pdo->lastInsertId();
+
+            ws_broadcast('patient.created', [
+                'patient_id' => $patientId,
+                'patient_name' => trim($data['first_name'] . ' ' . $data['last_name']),
+            ], [1, 3]);
 
             $this->json(201, [
                 'success'    => true,
@@ -514,6 +963,11 @@ class NurseController
             try { BillingHook::flushDeferred(); } catch (Throwable $e) {
                 error_log('[NurseController::createAdmission::flushDeferred] ' . $e->getMessage());
             }
+
+            ws_broadcast('admission.created', [
+                ...$this->getAdmissionNotificationContext($admissionId),
+                'patient_id' => $patientId,
+            ], [1, 3, 4]);
 
             $this->json(201, [
                 'success'      => true,
@@ -832,6 +1286,12 @@ class NurseController
             try { BillingHook::flushDeferred(); } catch (Throwable $e) {
                 error_log('[NurseController::assignRoomApi::flushDeferred] ' . $e->getMessage());
             }
+
+            ws_broadcast('admission.room.assigned', [
+                ...$this->getAdmissionNotificationContext($admissionId),
+                'room_id' => $roomId,
+            ], [1, 3]);
+
             $this->json(200, ['success' => true, 'message' => 'Room assigned successfully.']);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) $this->pdo->rollBack();
@@ -934,6 +1394,12 @@ class NurseController
             try { BillingHook::flushDeferred(); } catch (Throwable $e) {
                 error_log('[NurseController::transferRoom::flushDeferred] ' . $e->getMessage());
             }
+
+            ws_broadcast('admission.room.transferred', [
+                ...$this->getAdmissionNotificationContext($admissionId),
+                'new_room_id' => $newRoomId,
+            ], [1, 3]);
+
             $this->json(200, ['success' => true, 'message' => 'Room transfer completed successfully.']);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) $this->pdo->rollBack();
@@ -1067,6 +1533,8 @@ class NurseController
                 error_log('[NurseController::assignDoctorApi::flushDeferred] ' . $e->getMessage());
             }
 
+            ws_broadcast('doctor.assigned', ['admission_id' => $admissionId, 'doctor_id' => $doctorId], [1, 2, 3]);
+
             $this->json(200, ['success' => true, 'message' => 'Doctor assigned successfully.']);
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) $this->pdo->rollBack();
@@ -1084,11 +1552,26 @@ class NurseController
 
         try {
             $stmt = $this->pdo->prepare(
+                'SELECT admission_id, doctor_id FROM `admission_doctor`
+                 WHERE admission_doctor_id = ? AND ended_datetime IS NULL LIMIT 1'
+            );
+            $stmt->execute([$admissionDoctorId]);
+            $assignment = $stmt->fetch();
+            if (!$assignment) {
+                $this->json(404, ['success' => false, 'message' => 'Assignment not found or already ended.']);
+            }
+
+            $stmt = $this->pdo->prepare(
                 'UPDATE `admission_doctor`
                  SET ended_datetime = NOW()
                  WHERE admission_doctor_id = ? AND ended_datetime IS NULL'
             );
             $stmt->execute([$admissionDoctorId]);
+
+            ws_broadcast('doctor.removed', [
+                'admission_id' => (int)$assignment['admission_id'],
+                'doctor_id'    => (int)$assignment['doctor_id'],
+            ], [1, 2, 3]);
 
             $this->json(200, ['success' => true, 'message' => 'Doctor removed from admission.']);
         } catch (Throwable $e) {
@@ -1114,7 +1597,11 @@ class NurseController
                     bs.balance_amount,
                     bs.due_date,
                     bst.status_name AS billing_status_name,
-                    bst.color_code  AS billing_status_color
+                    bst.color_code  AS billing_status_color,
+                    (SELECT COUNT(*)
+                     FROM `service_request` sr
+                     WHERE sr.admission_id = a.admission_id
+                       AND sr.status IN ("Pending", "In Progress")) AS active_request_count
              FROM `admission` a
              INNER JOIN `patient` p ON p.patient_id = a.patient_id
              INNER JOIN `admission_status` ast ON ast.status_id = a.status_id
@@ -1197,6 +1684,7 @@ class NurseController
                  ) receipts ON receipts.fulfillment_item_id = sfi.fulfillment_item_id
                  WHERE sr.admission_id = ?
                    AND sf.status = "Completed"
+                   AND (sr.notes IS NULL OR sr.notes NOT LIKE "MED_RETURN:%")
                    AND sfi.quantity_fulfilled > COALESCE(receipts.quantity_received, 0)'
             );
             $stmt->execute([$admissionId]);
@@ -1213,37 +1701,8 @@ class NurseController
             );
             $stmt->execute([$admissionId]);
             $statementId = (int)$stmt->fetchColumn();
-            if ($statementId <= 0) {
-                $this->pdo->rollBack();
-                $this->json(409, [
-                    'success' => false,
-                    'message' => 'A billing statement must exist before discharge.',
-                ]);
-            }
-            (new ChargeSyncService($this->pdo))->syncStatement($statementId);
-
-            $stmt = $this->pdo->prepare(
-                'SELECT bs.balance_amount, bs.due_date, bst.status_name
-                 FROM `billing_statement` bs
-                 INNER JOIN `billing_status` bst ON bst.status_id = bs.status_id
-                 WHERE bs.statement_id = ? LIMIT 1'
-            );
-            $stmt->execute([$statementId]);
-            $billing = $stmt->fetch();
-            $isBillingStatusAllowed = $billing
-                && in_array($billing['status_name'], ['Paid', 'Partially Paid'], true);
-            $isOverdue = $billing
-                && !empty($billing['due_date'])
-                && $billing['due_date'] < date('Y-m-d')
-                && (float)$billing['balance_amount'] > 0;
-            if (!$isBillingStatusAllowed || $isOverdue) {
-                $this->pdo->rollBack();
-                $this->json(409, [
-                    'success' => false,
-                    'message' => $isOverdue
-                        ? 'The billing balance is overdue. Resolve the overdue balance before discharge.'
-                        : 'The billing statement must be Paid or Partially Paid before discharge.',
-                ]);
+            if ($statementId > 0) {
+                (new ChargeSyncService($this->pdo))->syncStatement($statementId);
             }
 
             $stmt = $this->pdo->prepare(
@@ -1290,6 +1749,8 @@ class NurseController
             } catch (Throwable $e) {
                 error_log('[NurseController::dischargePatient::billing] ' . $e->getMessage());
             }
+
+            ws_broadcast('admission.discharged', $this->getAdmissionNotificationContext($admissionId), [1, 2, 3, 4]);
 
             $this->json(200, ['success' => true, 'message' => 'Patient discharged successfully.']);
 

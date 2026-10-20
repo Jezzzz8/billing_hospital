@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/BillingHook.php';
+require_once __DIR__ . '/../includes/ws_notify.php';
 
 class DepartmentController
 {
@@ -45,7 +46,7 @@ class DepartmentController
 
     public function getQueue(): array
     {
-        $sql = 'SELECT sr.request_id, sr.department_id, sr.priority, sr.status, sr.request_datetime,
+        $sql = 'SELECT sr.request_id, sr.department_id, sr.priority, sr.status, sr.notes, sr.request_datetime,
                        sr.completed_datetime, sr.cancelled_datetime,
                        a.admission_id, a.chief_complaint,
                        p.patient_id, p.first_name, p.last_name,
@@ -69,10 +70,35 @@ class DepartmentController
         return $stmt->fetchAll();
     }
 
+    public function getRequestStatusPresentation(array $request): array
+    {
+        $status = (string)($request['status'] ?? 'Pending');
+        $isMedicineReturn = str_starts_with((string)($request['notes'] ?? ''), 'MED_RETURN:')
+            || !empty($request['medicine_return']);
+        $label = $isMedicineReturn
+            ? match ($status) {
+                'Pending' => 'Return Requested',
+                'In Progress' => 'Return Processing',
+                'Completed' => 'Returned',
+                'Cancelled' => 'Return Cancelled',
+                default => $status,
+            }
+            : $status;
+        $class = match ($status) {
+            'Pending' => 'bg-amber-100 text-amber-700',
+            'In Progress' => 'bg-blue-100 text-blue-700',
+            'Completed' => 'bg-emerald-100 text-emerald-700',
+            'Cancelled' => 'bg-rose-100 text-rose-700',
+            default => 'bg-slate-100 text-slate-700',
+        };
+
+        return ['label' => $label, 'class' => $class];
+    }
+
     public function getRequestDetails(int $requestId): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT sr.request_id, sr.department_id, sr.priority, sr.status, sr.request_datetime,
+            'SELECT sr.request_id, sr.department_id, sr.priority, sr.status, sr.request_datetime, sr.notes,
                     sr.instructions, sr.notes,
                     a.admission_id, a.chief_complaint,
                     p.patient_id, p.first_name, p.last_name,
@@ -90,6 +116,13 @@ class DepartmentController
         $request = $stmt->fetch();
         if (!$request) {
             return null;
+        }
+        $request['medicine_return'] = null;
+        if (preg_match('/^MED_RETURN:(\d+)\|(.*)$/s', (string)($request['notes'] ?? ''), $returnMatch)) {
+            $request['medicine_return'] = [
+                'origin_fulfillment_item_id' => (int)$returnMatch[1],
+                'reason' => $returnMatch[2],
+            ];
         }
 
         $stmt = $this->pdo->prepare(
@@ -111,7 +144,13 @@ class DepartmentController
     public function acceptRequest(int $requestId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT request_id, status, department_id FROM `service_request` WHERE request_id = ? LIMIT 1'
+            'SELECT sr.request_id, sr.status, sr.department_id, sr.admission_id,
+                    p.first_name, p.last_name, d.department_name
+             FROM `service_request` sr
+             INNER JOIN `admission` a ON a.admission_id = sr.admission_id
+             INNER JOIN `patient` p ON p.patient_id = a.patient_id
+             LEFT JOIN `department` d ON d.department_id = sr.department_id
+             WHERE sr.request_id = ? LIMIT 1'
         );
         $stmt->execute([$requestId]);
         $request = $stmt->fetch();
@@ -131,13 +170,26 @@ class DepartmentController
         );
         $stmt->execute([$status, $requestId]);
 
+        ws_broadcast('service.request.accepted', [
+            'request_id' => $requestId,
+            'admission_id' => (int)$request['admission_id'],
+            'patient_name' => trim($request['first_name'] . ' ' . $request['last_name']),
+            'department_name' => $request['department_name'] ?? '',
+        ], [1, 2, 5], $this->departmentId);
+
         return ['success' => true, 'message' => 'Request accepted and moved into processing.', 'status' => $status];
     }
 
     public function processRequest(int $requestId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT request_id, status, department_id FROM `service_request` WHERE request_id = ? LIMIT 1'
+            'SELECT sr.request_id, sr.status, sr.department_id, sr.admission_id,
+                    p.first_name, p.last_name, d.department_name
+             FROM `service_request` sr
+             INNER JOIN `admission` a ON a.admission_id = sr.admission_id
+             INNER JOIN `patient` p ON p.patient_id = a.patient_id
+             LEFT JOIN `department` d ON d.department_id = sr.department_id
+             WHERE sr.request_id = ? LIMIT 1'
         );
         $stmt->execute([$requestId]);
         $request = $stmt->fetch();
@@ -155,6 +207,13 @@ class DepartmentController
             'UPDATE `service_request` SET status = "In Progress" WHERE request_id = ?'
         );
         $stmt->execute([$requestId]);
+
+        ws_broadcast('service.request.processing', [
+            'request_id' => $requestId,
+            'admission_id' => (int)$request['admission_id'],
+            'patient_name' => trim($request['first_name'] . ' ' . $request['last_name']),
+            'department_name' => $request['department_name'] ?? '',
+        ], [1, 2, 5], $this->departmentId);
 
         return ['success' => true, 'message' => 'Request is now in progress.'];
     }
@@ -176,13 +235,23 @@ class DepartmentController
 
         try {
             $stmt = $this->pdo->prepare(
-                'SELECT request_id, status, department_id, admission_id
-                 FROM `service_request` WHERE request_id = ? LIMIT 1 FOR UPDATE'
+                'SELECT sr.request_id, sr.status, sr.department_id, sr.admission_id,
+                        sr.notes, d.department_code, d.department_name,
+                        p.first_name, p.last_name
+                 FROM `service_request` sr
+                 LEFT JOIN `department` d ON d.department_id = sr.department_id
+                 INNER JOIN `admission` a ON a.admission_id = sr.admission_id
+                 INNER JOIN `patient` p ON p.patient_id = a.patient_id
+                 WHERE sr.request_id = ? LIMIT 1 FOR UPDATE'
             );
             $stmt->execute([$requestId]);
             $request = $stmt->fetch();
             if (!$request) {
                 throw new RuntimeException('Request not found.');
+            }
+            $returnOriginId = 0;
+            if (preg_match('/^MED_RETURN:(\d+)\|/', (string)($request['notes'] ?? ''), $returnMatch)) {
+                $returnOriginId = (int)$returnMatch[1];
             }
             if ((int)$request['department_id'] !== $this->departmentId) {
                 throw new RuntimeException('This request is not assigned to your department.');
@@ -216,15 +285,30 @@ class DepartmentController
                 }
 
                 $requestItemId = (int)($item['request_item_id'] ?? 0);
-                $quantity = (int)($item['quantity_fulfilled'] ?? 0);
-                if ($requestItemId <= 0 || $quantity <= 0) {
+                if ($requestItemId <= 0) {
                     continue;
+                }
+                $rawQuantity = $item['quantity_fulfilled'] ?? 0;
+                $quantity = filter_var($rawQuantity === '' ? 0 : $rawQuantity, FILTER_VALIDATE_INT);
+                if ($quantity === false || $quantity < 0) {
+                    throw new RuntimeException('Fulfilled quantity must be a whole number of zero or greater.');
+                }
+                $rawRestocked = $item['quantity_restocked'] ?? 0;
+                $restockedQuantity = filter_var($rawRestocked === '' ? 0 : $rawRestocked, FILTER_VALIDATE_INT);
+                if ($restockedQuantity === false || $restockedQuantity < 0 || $restockedQuantity > $quantity) {
+                    throw new RuntimeException('Restocked quantity must be between zero and the physically received quantity.');
+                }
+                if ($quantity === 0) continue;
+                if ($returnOriginId === 0 && $restockedQuantity > 0) {
+                    throw new RuntimeException('Only a medicine return can add returned items back to stock.');
                 }
 
                 $checkItem = $this->pdo->prepare(
-                    'SELECT request_item_id, quantity_requested, quantity_fulfilled, charge_item_id
-                     FROM `service_request_item`
-                     WHERE request_item_id = ? AND request_id = ? LIMIT 1 FOR UPDATE'
+                    'SELECT sri.request_item_id, sri.quantity_requested, sri.quantity_fulfilled,
+                            sri.charge_item_id, ci.is_stockable, ci.item_name
+                     FROM `service_request_item` sri
+                     INNER JOIN `charge_item` ci ON ci.charge_item_id = sri.charge_item_id
+                     WHERE sri.request_item_id = ? AND sri.request_id = ? LIMIT 1 FOR UPDATE'
                 );
                 $checkItem->execute([$requestItemId, $requestId]);
                 $requestedItem = $checkItem->fetch();
@@ -238,12 +322,57 @@ class DepartmentController
                 }
 
                 $chargeItemId = (int)($requestedItem['charge_item_id'] ?? 0);
+                $isStockable = (int)$requestedItem['is_stockable'] === 1;
+                if ($isStockable && ($request['department_code'] ?? '') !== 'PHARM') {
+                    throw new RuntimeException('Stock-tracked items can only be fulfilled by the Pharmacy department.');
+                }
+                if ($returnOriginId > 0) {
+                    $origin = $this->pdo->prepare(
+                        'SELECT charge_item_id FROM `service_fulfillment_item`
+                         WHERE fulfillment_item_id = ? LIMIT 1'
+                    );
+                    $origin->execute([$returnOriginId]);
+                    if ((int)$origin->fetchColumn() !== $chargeItemId || !$isStockable) {
+                        throw new RuntimeException('Returned item does not match the original stockable medicine.', 409);
+                    }
+                } elseif ($isStockable) {
+                    $stock = $this->pdo->prepare(
+                        'UPDATE `charge_item`
+                         SET stock_quantity = stock_quantity - ?
+                         WHERE charge_item_id = ? AND is_stockable = 1 AND stock_quantity >= ?'
+                    );
+                    $stock->execute([$quantity, $chargeItemId, $quantity]);
+                    if ($stock->rowCount() !== 1) {
+                        $available = $this->pdo->prepare('SELECT stock_quantity FROM `charge_item` WHERE charge_item_id = ?');
+                        $available->execute([$chargeItemId]);
+                        throw new RuntimeException(
+                            'Insufficient pharmacy stock for ' . $requestedItem['item_name'] . '. Available: '
+                            . (int)$available->fetchColumn() . ', required: ' . $quantity
+                            . '. Add the available quantity on the Pharmacy Stock page, then retry fulfillment.',
+                            409
+                        );
+                    }
+                }
+
                 $unitPrice = 0.00;
                 if ($chargeItemId > 0) {
-                    $price = $this->pdo->prepare(
-                        'SELECT default_price FROM `charge_item` WHERE charge_item_id = ? LIMIT 1'
-                    );
-                    $price->execute([$chargeItemId]);
+                    if ($returnOriginId > 0) {
+                        $price = $this->pdo->prepare(
+                            'SELECT COALESCE(c.actual_price, original.unit_price)
+                             FROM `service_fulfillment_item` original
+                             LEFT JOIN `charge` c
+                               ON c.fulfillment_item_id = original.fulfillment_item_id
+                              AND c.source_type = "FULFILLMENT"
+                             WHERE original.fulfillment_item_id = ?
+                             LIMIT 1'
+                        );
+                        $price->execute([$returnOriginId]);
+                    } else {
+                        $price = $this->pdo->prepare(
+                            'SELECT default_price FROM `charge_item` WHERE charge_item_id = ? LIMIT 1'
+                        );
+                        $price->execute([$chargeItemId]);
+                    }
                     $storedPrice = $price->fetchColumn();
                     if ($storedPrice === false) {
                         throw new RuntimeException('The requested charge item no longer exists.');
@@ -253,17 +382,61 @@ class DepartmentController
 
                 $insertLine = $this->pdo->prepare(
                     'INSERT INTO `service_fulfillment_item`
-                        (fulfillment_id, request_item_id, charge_item_id, quantity_fulfilled, unit_price, notes, fulfilled_datetime)
-                     VALUES (?, ?, ?, ?, ?, ?, NOW())'
+                        (fulfillment_id, request_item_id, charge_item_id, quantity_fulfilled,
+                         quantity_restocked, unit_price, notes, fulfilled_datetime)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, NOW())'
                 );
                 $insertLine->execute([
                     $fulfillmentId,
                     $requestItemId,
                     $chargeItemId,
                     $quantity,
+                    $returnOriginId > 0 ? $restockedQuantity : 0,
                     $unitPrice,
                     !empty($item['notes']) ? trim((string)$item['notes']) : null,
                 ]);
+
+                if ($returnOriginId > 0 && $restockedQuantity > 0) {
+                    $stock = $this->pdo->prepare(
+                        'UPDATE `charge_item`
+                         SET stock_quantity = stock_quantity + ?
+                         WHERE charge_item_id = ? AND is_stockable = 1'
+                    );
+                    $stock->execute([$restockedQuantity, $chargeItemId]);
+                    if ($stock->rowCount() !== 1) {
+                        throw new RuntimeException('Could not add the returned quantity back to stock.', 409);
+                    }
+                }
+                if ($returnOriginId > 0) {
+                    $returned = $this->pdo->prepare(
+                        'UPDATE `service_fulfillment_item`
+                         SET quantity_remaining = quantity_remaining - ?,
+                             intake_status = CASE
+                                 WHEN quantity_remaining - ? = 0 THEN "Completed"
+                                 WHEN quantity_remaining - ? < (
+                                     SELECT COALESCE(SUM(receipt.quantity_received), 0)
+                                     FROM `service_fulfillment_receipt_item` receipt
+                                     WHERE receipt.fulfillment_item_id = ?
+                                 ) THEN "In Progress"
+                                 ELSE "Not Started"
+                             END
+                         WHERE fulfillment_item_id = ? AND quantity_remaining >= ?'
+                    );
+                    $returned->execute([
+                        $quantity,
+                        $quantity,
+                        $quantity,
+                        $returnOriginId,
+                        $returnOriginId,
+                        $quantity,
+                    ]);
+                    if ($returned->rowCount() !== 1) {
+                        throw new RuntimeException(
+                            'The returned quantity exceeds the nurse-confirmed remaining quantity.',
+                            409
+                        );
+                    }
+                }
 
                 $totalFulfilled += $quantity;
 
@@ -285,8 +458,39 @@ class DepartmentController
             );
             $updateRequest->execute([$requestStatus, $requestId]);
 
+            $statementStmt = $this->pdo->prepare(
+                'SELECT statement_id FROM `billing_statement`
+                 WHERE admission_id = ? LIMIT 1 FOR UPDATE'
+            );
+            $statementStmt->execute([(int)$request['admission_id']]);
+            $statementId = (int)$statementStmt->fetchColumn();
+            if ($statementId > 0) {
+                (new ChargeSyncService($this->pdo))->syncStatement($statementId);
+            }
+
             $this->pdo->commit();
-            BillingHook::emit($this->pdo, (int)$request['admission_id']);
+
+            $requestContext = [
+                'request_id' => $requestId,
+                'admission_id' => (int)$request['admission_id'],
+                'patient_name' => trim($request['first_name'] . ' ' . $request['last_name']),
+                'department_name' => $request['department_name'] ?? '',
+                'status' => $requestStatus,
+            ];
+            ws_broadcast('service.request.fulfilled', $requestContext, [1, 2, 3, 4, 5], $this->departmentId);
+            if ($statementId > 0) {
+                ws_broadcast('billing.statement.updated', ['statement_id' => $statementId], [1, 4]);
+            }
+            if ($returnOriginId > 0) {
+                ws_broadcast('medicine.return.received', [
+                    'request_id' => $requestId,
+                    'admission_id' => (int)$request['admission_id'],
+                    'patient_name' => trim($request['first_name'] . ' ' . $request['last_name']),
+                    'department_name' => $request['department_name'] ?? '',
+                    'fulfillment_item_id' => $returnOriginId,
+                    'statement_id' => $statementId ?: null,
+                ], [1, 2, 4, 5], $this->departmentId);
+            }
 
             return [
                 'success' => true,
@@ -294,6 +498,7 @@ class DepartmentController
                 'fulfillment_id' => $fulfillmentId,
                 'status' => $requestStatus,
                 'fulfilled_quantity' => $totalFulfilled,
+                'statement_id' => $statementId ?: null,
             ];
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

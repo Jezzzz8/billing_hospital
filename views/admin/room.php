@@ -36,8 +36,6 @@ $archivedRooms = $totalRooms - $activeRooms;
     </button>
 </div>
 
-<div id="alert" class="hidden mb-5 rounded-lg px-4 py-3 text-sm border"></div>
-
 <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
     <div class="bg-white rounded-xl border border-slate-200 p-5">
         <p class="text-xs font-medium text-slate-500 uppercase tracking-wide">Total Rooms</p>

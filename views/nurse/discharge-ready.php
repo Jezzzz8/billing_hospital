@@ -20,8 +20,8 @@ $readyPatients = $controller->getReadyForDischarge();
     <div>
         <p class="font-semibold">Discharge requires doctor clearance and resolved service requests</p>
         <p class="text-xs mt-0.5">
-            Patients appear here only after the attending doctor marks them
-            <strong>Ready for Discharge</strong> and all active service requests are resolved. A current billing statement and a non-overdue payment are also required.
+            Patients appear here after the attending doctor marks them
+            <strong>Ready for Discharge</strong>. Resolve active service requests before discharge; unpaid balances do not prevent discharge.
         </p>
     </div>
 </div>
@@ -57,11 +57,7 @@ $readyPatients = $controller->getReadyForDischarge();
                         $admitted = new DateTime($p['admission_datetime']);
                         $now = new DateTime();
                         $los = $admitted->diff($now);
-                        $billingOverdue = !empty($p['due_date'])
-                            && $p['due_date'] < date('Y-m-d')
-                            && (float)($p['balance_amount'] ?? 0) > 0;
-                        $billingAllowsDischarge = in_array($p['billing_status_name'] ?? '', ['Paid', 'Partially Paid'], true)
-                            && !$billingOverdue;
+                        $serviceRequestsResolved = (int)($p['active_request_count'] ?? 0) === 0;
 
                     ?>
                         <tr class="hover:bg-slate-50">
@@ -96,17 +92,20 @@ $readyPatients = $controller->getReadyForDischarge();
                                     <p class="text-xs text-slate-500 mt-1">
                                         Balance: ₱<?= number_format((float)$p['balance_amount'], 2) ?>
                                     </p>
-                                    <?php if (!$billingAllowsDischarge): ?>
+                                    <?php if ((float)($p['balance_amount'] ?? 0) > 0): ?>
                                         <p class="mt-1 text-xs text-rose-600">
-                                            <?= $billingOverdue ? 'Overdue balance must be resolved.' : 'Payment is required before discharge.' ?>
+                                            Outstanding balance remains payable after discharge.
                                         </p>
+                                    <?php endif; ?>
+                                    <?php if (!$serviceRequestsResolved): ?>
+                                        <p class="mt-1 text-xs text-amber-700">Active service requests must be completed first. Check with Pharmacy if a medicine return is pending.</p>
                                     <?php endif; ?>
                                 <?php else: ?>
                                     <span class="text-xs text-amber-600">No statement yet</span>
                                 <?php endif; ?>
                             </td>
                             <td class="px-6 py-4 text-right whitespace-nowrap">
-                                <?php if ($billingAllowsDischarge): ?>
+                                <?php if ($serviceRequestsResolved): ?>
                                     <button type="button"
                                             class="discharge-btn inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
                                             data-admission-id="<?= (int)$p['admission_id'] ?>"
@@ -119,8 +118,8 @@ $readyPatients = $controller->getReadyForDischarge();
                                 <?php else: ?>
                                     <button type="button" disabled
                                             class="cursor-not-allowed rounded-lg bg-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-500"
-                                            title="<?= $billingOverdue ? 'Overdue balance must be resolved.' : 'Payment is required before discharge.' ?>">
-                                        Billing Hold
+                                            title="Active service requests must be resolved before discharge.">
+                                        Requests Pending
                                     </button>
                                 <?php endif; ?>
                             </td>

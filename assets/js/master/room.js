@@ -1,8 +1,6 @@
-async function initRoomPage(event) {
+export async function initRoomPage(event) {
   const baseUrl = document.body.dataset.baseUrl || "";
   const signal = event?.detail?.signal || new AbortController().signal;
-  const alertBox = document.getElementById("alert");
-  if (!alertBox) return;
 
   const modal = document.getElementById("roomModal");
   const form = document.getElementById("roomForm");
@@ -72,17 +70,23 @@ async function initRoomPage(event) {
   }, { signal });
 
   const showAlert = (msg, type = "error") => {
-    const styles = {
-      error: "bg-red-50 border-red-200 text-red-700",
-      success: "bg-emerald-50 border-emerald-200 text-emerald-700",
-    };
-    alertBox.className = `mb-5 rounded-lg px-4 py-3 text-sm border ${styles[type] || styles.error}`;
-    alertBox.textContent = msg;
-    alertBox.classList.remove("hidden");
-    alertBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (typeof window.showAppAlert === "function") {
+      window.showAppAlert(msg, {
+        icon: type === "success" ? "success" : "error",
+        title: type === "success" ? "Room updated" : "Room action failed",
+      });
+      return;
+    }
+    if (window.Swal?.fire) {
+      window.Swal.fire({
+        icon: type === "success" ? "success" : "error",
+        title: type === "success" ? "Room updated" : "Room action failed",
+        text: String(msg),
+      });
+      return;
+    }
+    console.error(String(msg));
   };
-  const hideAlert = () => alertBox.classList.add("hidden");
-
   const clearErrors = (scope) => {
     scope.querySelectorAll("[data-error-for]").forEach((p) => {
       p.textContent = "";
@@ -152,7 +156,6 @@ async function initRoomPage(event) {
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    hideAlert();
     clearErrors(form);
 
     const id = document.getElementById("room_id").value;
@@ -367,8 +370,3 @@ async function initRoomPage(event) {
     showAlert(flash, "success");
   }
 }
-
-document.addEventListener("spa:page-loaded", (event) => {
-  if (event.detail.page !== "room") return;
-  initRoomPage(event);
-});

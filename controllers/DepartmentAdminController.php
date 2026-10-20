@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/../includes/ws_notify.php';
+
 class DepartmentAdminController
 {
     private PDO $pdo;
@@ -54,10 +56,13 @@ class DepartmentAdminController
             !empty($data['description']) ? $data['description'] : null,
         ]);
 
+        $id = (int)$this->pdo->lastInsertId();
+        ws_broadcast('master.updated', ['resource' => 'departments', 'operation' => 'create', 'id' => $id], [1, 3]);
+
         $this->json(201, [
             'success' => true,
             'message' => 'Department created successfully.',
-            'id'      => (int)$this->pdo->lastInsertId(),
+            'id'      => $id,
         ]);
     }
 
@@ -94,6 +99,8 @@ class DepartmentAdminController
             $id,
         ]);
 
+        ws_broadcast('master.updated', ['resource' => 'departments', 'operation' => 'update', 'id' => $id], [1, 3]);
+
         $this->json(200, ['success' => true, 'message' => 'Department updated successfully.']);
     }
 
@@ -125,6 +132,8 @@ class DepartmentAdminController
 
         $stmt = $this->pdo->prepare('UPDATE `department` SET is_active = ? WHERE department_id = ?');
         $stmt->execute([$newState, $id]);
+
+        ws_broadcast('master.updated', ['resource' => 'departments', 'operation' => 'toggle-active', 'id' => $id, 'is_active' => $newState], [1, 3]);
 
         $this->json(200, [
             'success'   => true,

@@ -283,9 +283,9 @@ function bindStatementPage() {
             root.querySelectorAll('[data-detail-panel]').forEach(panel => panel.classList.toggle('hidden', panel.dataset.detailPanel !== tab.dataset.detailTab));
         }
         const removeCharge = event.target.closest('[data-remove-charge]');
-        if (removeCharge && confirm('Remove this charge from the statement?')) await mutate('remove-charge', { statement_id: statementId(activeStatement), charge_id: removeCharge.dataset.removeCharge }, 'Charge removed.', () => openStatement(statementId(activeStatement)));
+        if (removeCharge && await window.confirmWithSweetAlert('Remove this charge from the statement?')) await mutate('remove-charge', { statement_id: statementId(activeStatement), charge_id: removeCharge.dataset.removeCharge }, 'Charge removed.', () => openStatement(statementId(activeStatement)));
         const removePayment = event.target.closest('[data-remove-payment]');
-        if (removePayment && confirm('Remove this payment?')) await mutate('remove-payment', { statement_id: statementId(activeStatement), payment_id: removePayment.dataset.removePayment }, 'Payment removed.', () => openStatement(statementId(activeStatement)));
+        if (removePayment && await window.confirmWithSweetAlert('Remove this payment?')) await mutate('remove-payment', { statement_id: statementId(activeStatement), payment_id: removePayment.dataset.removePayment }, 'Payment removed.', () => openStatement(statementId(activeStatement)));
     });
     document.getElementById('charge_item_id').addEventListener('change', event => {
         const price = event.target.selectedOptions[0]?.dataset.price;

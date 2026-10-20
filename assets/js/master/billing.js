@@ -449,7 +449,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
   }
 
   async function removeCharge(statementId, chargeId) {
-    if (!confirm("Remove this charge?")) return;
+    if (!await window.confirmWithSweetAlert("Remove this charge?")) return;
     try {
       const { data } = await axios.post(
         `${baseUrl}/api/admin.php?resource=billing&operation=remove-charge&id=${statementId}&charge_id=${chargeId}`,
@@ -474,7 +474,7 @@ document.addEventListener("spa:page-loaded", async (event) => {
   }
 
   async function removePayment(statementId, paymentId) {
-    if (!confirm("Remove this payment?")) return;
+    if (!await window.confirmWithSweetAlert("Remove this payment?")) return;
     try {
       const { data } = await axios.post(
         `${baseUrl}/api/admin.php?resource=billing&operation=remove-payment&id=${statementId}&payment_id=${paymentId}`,

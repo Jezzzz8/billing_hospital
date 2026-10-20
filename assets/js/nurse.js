@@ -10,7 +10,8 @@ function initializeNursePage(event) {
     const writeOperations = new Set([
         'register-patient', 'create-admission', 'assign-room', 'transfer-room',
         'assign-doctor', 'remove-doctor', 'discharge', 'receive-fulfillment-item',
-        'create-nurse-order-request'
+        'create-nurse-order-request', 'record-medicine-dose', 'record-medicine-doses-batch',
+        'reconcile-medicine-intake'
     ]);
     const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -89,7 +90,7 @@ function initializeNursePage(event) {
                 ${[['Active Admissions', s.active_admissions, 'text-slate-900'], ['Available Rooms', s.available_rooms, 'text-emerald-600'], ['Occupied Rooms', s.occupied_rooms, 'text-amber-600'], ['Ready for Discharge', s.ready_for_discharge, 'text-blue-600']].map(([label, value, color]) => `<div class="rounded-xl border bg-white p-5"><p class="text-xs font-medium uppercase tracking-wide text-slate-500">${label}</p><p class="mt-2 text-2xl font-bold ${color}">${Number(value || 0)}</p></div>`).join('')}
             </div>
             ${ready.length ? `<div class="mb-8 overflow-hidden rounded-xl border border-blue-200 bg-white">
-                <div class="border-b bg-blue-50 px-5 py-4"><h2 class="font-semibold">Ready for Discharge — Waiting for Billing</h2><p class="text-xs text-slate-600">Billing must be Paid or Partially Paid before discharge.</p></div>
+                <div class="border-b bg-blue-50 px-5 py-4"><h2 class="font-semibold">Ready for Discharge — Waiting for Nursing</h2><p class="text-xs text-slate-600">Complete the discharge workflow after service requests are resolved. Unpaid balances remain on the billing statement.</p></div>
                 <div class="overflow-x-auto"><table class="min-w-full text-sm"><thead class="bg-slate-50 text-left text-xs uppercase"><tr><th class="px-5 py-3">Patient</th><th class="px-5 py-3">Room</th><th class="px-5 py-3">Admitted</th><th class="px-5 py-3">Billing</th><th class="px-5 py-3">Action</th></tr></thead><tbody class="divide-y">${ready.map(p => `<tr>${cell(`<strong>${escapeHtml(p.first_name)} ${escapeHtml(p.last_name)}</strong><small class="block text-slate-500">#${Number(p.admission_id)}</small>`)}${cell(`${escapeHtml(p.room_number || '—')}<small class="block text-slate-500">${escapeHtml(p.room_type_name || '')}</small>`)}${cell(date(p.admission_datetime))}${cell(p.statement_id ? `${badge(p.billing_status_name, p.billing_status_color)}<small class="block text-slate-500">Balance: ${money(p.balance_amount)}</small>` : 'No statement yet')}${cell(`<a class="text-blue-700 underline" href="${link('nurse-discharge-ready')}">View discharge</a>`)}</tr>`).join('')}</tbody></table></div>
             </div>` : ''}
             <div class="mb-8 overflow-hidden rounded-xl border bg-white"><div class="border-b px-5 py-4"><h2 class="font-semibold">Active Admissions</h2></div>
@@ -161,6 +162,411 @@ function initializeNursePage(event) {
                 target.innerHTML = emptyState('Could not load department fulfillments.', error.message);
             }
         }
+
+    async function loadMedicineIntakes() {
+        const target = document.getElementById('nurseMedicineIntakes') || root;
+        const selectedAdmissionKey = 'nurse-medicine-intakes-admission';
+        const selectedItemKey = 'nurse-medicine-intakes-item';
+        let selectedAdmissionId = Number(sessionStorage.getItem(selectedAdmissionKey)) || null;
+        let selectedFulfillmentItemId = Number(sessionStorage.getItem(selectedItemKey)) || null;
+        const persistSelection = () => {
+            if (selectedAdmissionId) sessionStorage.setItem(selectedAdmissionKey, String(selectedAdmissionId));
+            else sessionStorage.removeItem(selectedAdmissionKey);
+            if (selectedFulfillmentItemId) sessionStorage.setItem(selectedItemKey, String(selectedFulfillmentItemId));
+            else sessionStorage.removeItem(selectedItemKey);
+        };
+
+        const render = rows => {
+            if (!rows.length) {
+                selectedAdmissionId = null;
+                selectedFulfillmentItemId = null;
+                persistSelection();
+                target.innerHTML = emptyState('No received Pharmacy stock items need intake monitoring.');
+                return;
+            }
+
+            const patients = new Map();
+            rows.forEach(row => {
+                const admissionId = Number(row.admission_id);
+                if (!patients.has(admissionId)) {
+                    patients.set(admissionId, {
+                        admissionId,
+                        firstName: row.first_name,
+                        lastName: row.last_name,
+                        admissionStatus: row.admission_status,
+                        items: [],
+                    });
+                }
+                patients.get(admissionId).items.push(row);
+            });
+            const patientRows = Array.from(patients.values()).map(patient => {
+                const statuses = patient.items.map(item => item.intake_status);
+                patient.status = statuses.includes('Needs Reconciliation') ? 'Needs Reconciliation'
+                    : statuses.includes('In Progress') ? 'In Progress'
+                        : statuses.includes('Not Started') ? 'Not Started'
+                            : 'Completed';
+                patient.reconciliationCount = statuses.filter(status => status === 'Needs Reconciliation').length;
+                patient.remaining = patient.items.reduce((sum, item) => sum + Number(item.quantity_remaining), 0);
+                patient.received = patient.items.reduce((sum, item) => sum + Number(item.quantity_received), 0);
+                return patient;
+            });
+            if (!patientRows.some(patient => patient.admissionId === selectedAdmissionId)) {
+                selectedAdmissionId = null;
+                selectedFulfillmentItemId = null;
+                persistSelection();
+            }
+            const selectedPatient = patientRows.find(patient => patient.admissionId === selectedAdmissionId);
+
+            if (!selectedPatient) {
+                target.innerHTML = `<div class="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead class="bg-slate-50 text-slate-600">
+                            <tr>
+                                <th class="px-6 py-3 text-left font-medium">Patient</th>
+                                <th class="px-6 py-3 text-left font-medium">Admission</th>
+                                <th class="px-6 py-3 text-left font-medium">Intake Status</th>
+                                <th class="px-6 py-3 text-right font-medium">Items</th>
+                                <th class="px-6 py-3 text-right font-medium">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            ${patientRows.map(patient => {
+                                const statusClass = patient.status === 'Completed'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : patient.status === 'Needs Reconciliation'
+                                        ? 'bg-amber-100 text-amber-900'
+                                        : patient.status === 'In Progress'
+                                            ? 'bg-blue-100 text-blue-800'
+                                            : 'bg-slate-100 text-slate-700';
+                                return `<tr class="hover:bg-slate-50">
+                                    <td class="px-6 py-3">
+                                        <p class="font-medium text-slate-900">${escapeHtml(patient.firstName)} ${escapeHtml(patient.lastName)}</p>
+                                        <p class="text-xs text-slate-500">${escapeHtml(patient.admissionStatus)}</p>
+                                    </td>
+                                    <td class="px-6 py-3 text-slate-600">#${patient.admissionId}</td>
+                                    <td class="px-6 py-3"><span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${statusClass}">${escapeHtml(patient.status)}</span></td>
+                                    <td class="px-6 py-3 text-right text-slate-600">${patient.items.length}</td>
+                                    <td class="px-6 py-3 text-right"><button type="button" data-manage-patient="${patient.admissionId}" class="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100">Manage</button></td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+            target.querySelectorAll('[data-manage-patient]').forEach(button => {
+                button.addEventListener('click', () => {
+                    const patient = patientRows.find(
+                        row => row.admissionId === Number(button.dataset.managePatient)
+                    );
+                    selectedAdmissionId = patient.admissionId;
+                    selectedFulfillmentItemId = patient.items.length
+                        ? Number(patient.items[0].fulfillment_item_id)
+                        : null;
+                    persistSelection();
+                    render(rows);
+                });
+            });
+                return;
+            }
+
+            const patientItems = selectedPatient.items;
+            if (!patientItems.some(item => Number(item.fulfillment_item_id) === selectedFulfillmentItemId)) {
+                selectedFulfillmentItemId = patientItems.length
+                    ? Number(patientItems[0].fulfillment_item_id)
+                    : null;
+                persistSelection();
+            }
+            target.innerHTML = `<div class="mb-6">
+                <button type="button" data-intake-back class="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900">← Back to patients</button>
+                <div class="rounded-xl border border-slate-200 bg-white p-6">
+                    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900">${escapeHtml(selectedPatient.firstName)} ${escapeHtml(selectedPatient.lastName)}</h2>
+                            <p class="text-sm text-slate-500">Admission #${selectedPatient.admissionId} · ${escapeHtml(selectedPatient.admissionStatus)}</p>
+                        </div>
+                        <span class="inline-flex self-start rounded-full border px-3 py-1.5 text-sm font-medium ${selectedPatient.status === 'Completed' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : selectedPatient.status === 'Needs Reconciliation' ? 'border-amber-200 bg-amber-50 text-amber-900' : selectedPatient.status === 'In Progress' ? 'border-blue-200 bg-blue-50 text-blue-800' : 'border-slate-200 bg-slate-50 text-slate-700'}">${escapeHtml(selectedPatient.status)}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div class="border-b border-slate-100 px-4 py-3">
+                    <h3 class="text-base font-semibold text-slate-900">Pharmacy Medicines</h3>
+                    <p class="mt-1 text-sm text-slate-500">Select an item to manage its intake.</p>
+                </div>
+                <div class="divide-y divide-slate-100">
+                    ${patientItems.map(item => {
+                        const active = Number(item.fulfillment_item_id) === selectedFulfillmentItemId;
+                        const itemStatusClass = item.intake_status === 'Completed'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : item.intake_status === 'Needs Reconciliation'
+                                ? 'bg-amber-100 text-amber-900'
+                                : item.intake_status === 'In Progress'
+                                    ? 'bg-blue-100 text-blue-800'
+                                    : 'bg-slate-100 text-slate-700';
+                        return `<button type="button" data-select-medicine="${Number(item.fulfillment_item_id)}" aria-pressed="${active}" class="block w-full border-l-4 px-4 py-3 text-left transition ${active ? 'border-blue-600 bg-blue-50' : 'border-transparent bg-white hover:bg-slate-50'}">
+                            <span class="flex items-start justify-between gap-2">
+                                <span class="min-w-0">
+                                    <span class="block truncate text-sm font-semibold text-slate-900">${escapeHtml(item.item_name)}</span>
+                                    <span class="mt-1 block truncate text-xs text-slate-500">${escapeHtml(item.item_code || 'Pharmacy item')} · ${Number(item.quantity_remaining)} ${escapeHtml(item.unit_of_measure || 'units')} remaining</span>
+                                </span>
+                                <span class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${itemStatusClass}">${escapeHtml(item.intake_status)}</span>
+                            </span>
+                        </button>`;
+                    }).join('')}
+                </div>
+            </section>
+            <section class="min-w-0 lg:col-span-2">
+            <div class="mb-4 flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-6 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Selected Medicine</p>
+                    <h2 class="mt-1 text-lg font-bold text-slate-900">${escapeHtml(patientItems.find(item => Number(item.fulfillment_item_id) === selectedFulfillmentItemId)?.item_name || 'Select a medicine')}</h2>
+                    <p class="mt-1 text-sm text-slate-500">Record doses or reconcile the starting quantity.</p>
+                </div>
+            </div>
+            <details class="mb-4 rounded-xl border border-slate-200 bg-white">
+                <summary class="cursor-pointer px-4 py-3 font-semibold text-slate-900">Batch dose entry <span class="text-sm font-normal text-slate-500">(optional)</span></summary>
+            <form data-batch-dose-form class="border-t border-slate-100 p-4">
+                <div class="mb-3">
+                    <p class="mt-1 text-sm text-slate-500">Enter the quantity administered for each medicine, then record the doses together. Leave unused quantities blank.</p>
+                </div>
+                <div class="space-y-2">
+                    ${patientItems.map(item => {
+                        const canRecord = item.intake_status !== 'Needs Reconciliation'
+                            && item.intake_status !== 'Completed'
+                            && item.admission_status !== 'Ready for Discharge'
+                            && Number(item.quantity_remaining) > 0;
+                        return `<label class="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-3 rounded-lg border border-slate-100 px-3 py-2">
+                            <span class="min-w-0">
+                                <span class="block truncate text-sm font-medium text-slate-800">${escapeHtml(item.item_name)}</span>
+                                <span class="block text-xs text-slate-500">${Number(item.quantity_remaining)} ${escapeHtml(item.unit_of_measure || 'units')} remaining${canRecord ? '' : ` · ${escapeHtml(item.intake_status === 'Needs Reconciliation' ? 'Reconcile first' : item.admission_status === 'Ready for Discharge' ? 'Locked for discharge' : 'No doses available')}`}</span>
+                            </span>
+                            <input type="number" min="1" max="${Number(item.quantity_remaining)}" step="1" data-batch-dose="${Number(item.fulfillment_item_id)}" ${canRecord ? '' : 'disabled'} placeholder="Qty" aria-label="Batch dose quantity for ${escapeHtml(item.item_name)}" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm disabled:bg-slate-100">
+                        </label>`;
+                    }).join('')}
+                </div>
+                <div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <input type="text" maxlength="500" data-batch-dose-notes placeholder="Optional note for all doses in this batch" aria-label="Note for batch dose entries" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm sm:max-w-md">
+                    <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">Record entered doses</button>
+                </div>
+            </form>
+            </details>
+            <div data-intake-cards class="grid grid-cols-1 gap-2"></div>
+            </section>
+            </div>`;
+
+            target.querySelector('[data-intake-back]').addEventListener('click', () => {
+                selectedAdmissionId = null;
+                selectedFulfillmentItemId = null;
+                persistSelection();
+                render(rows);
+            });
+            target.querySelectorAll('[data-select-medicine]').forEach(button => {
+                button.addEventListener('click', () => {
+                    selectedFulfillmentItemId = Number(button.dataset.selectMedicine);
+                    persistSelection();
+                    render(rows);
+                });
+            });
+            const cards = target.querySelector('[data-intake-cards]');
+            const batchDoseForm = target.querySelector('[data-batch-dose-form]');
+            batchDoseForm.addEventListener('submit', async event => {
+                event.preventDefault();
+                const notes = batchDoseForm.querySelector('[data-batch-dose-notes]').value.trim();
+                const items = Array.from(batchDoseForm.querySelectorAll('[data-batch-dose]'))
+                    .filter(input => input.value !== '')
+                    .map(input => ({
+                        fulfillment_item_id: Number(input.dataset.batchDose),
+                        quantity_administered: Number(input.value),
+                        notes,
+                    }));
+                if (!items.length) {
+                    showNotice('Enter a dose quantity for at least one medicine.');
+                    return;
+                }
+                const submitButton = batchDoseForm.querySelector('button[type="submit"]');
+                submitButton.disabled = true;
+                try {
+                    const result = await request('record-medicine-doses-batch', {
+                        method: 'POST',
+                        body: { items },
+                    });
+                    persistSelection();
+                    showNotice(result.message || 'Batch doses recorded.', true);
+                    render(await request('medicine-intakes'));
+                } catch (error) {
+                    showNotice(error.message);
+                    submitButton.disabled = false;
+                }
+            });
+            const renderCards = () => {
+                const selectedItem = patientItems.find(
+                    row => Number(row.fulfillment_item_id) === selectedFulfillmentItemId
+                );
+                const filteredRows = selectedItem ? [selectedItem] : [];
+
+                if (!filteredRows.length) {
+                    cards.innerHTML = emptyState('No medicine selected.', 'Choose a Pharmacy medicine from the list.');
+                    return;
+                }
+
+                cards.innerHTML = filteredRows.map(row => {
+                    const received = Number(row.quantity_received);
+                    const remaining = Number(row.quantity_remaining);
+                    const administered = Number(row.quantity_administered);
+                    const unit = row.unit_of_measure || 'units';
+                    const remainingPercent = received > 0 ? Math.min(100, Math.round((remaining / received) * 100)) : 0;
+                    const statusClass = row.intake_status === 'Completed'
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                        : row.intake_status === 'Needs Reconciliation'
+                            ? 'border-amber-200 bg-amber-50 text-amber-900'
+                            : row.intake_status === 'In Progress'
+                                ? 'border-blue-200 bg-blue-50 text-blue-800'
+                                : 'border-slate-200 bg-slate-50 text-slate-700';
+                    const events = row.intake_events || [];
+
+                    return `<article data-intake-row="${Number(row.fulfillment_item_id)}" class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                        <div class="border-b border-slate-100 px-4 py-3">
+                            <div class="flex items-center justify-between gap-3">
+                                <p class="text-sm font-medium text-slate-600">Request #${Number(row.request_id)} · Fulfillment #${Number(row.fulfillment_item_id)}</p>
+                                <span class="inline-flex shrink-0 items-center self-start rounded-full border px-2.5 py-1 text-xs font-semibold ${statusClass}">${escapeHtml(row.intake_status)}</span>
+                            </div>
+                        </div>
+                        <div class="space-y-3 p-3">
+                            <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                <div class="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2">
+                                    <span class="text-xs font-medium uppercase tracking-wide text-slate-500">Received</span>
+                                    <span class="shrink-0 text-base font-bold text-slate-800">${received} <span class="text-xs font-normal text-slate-500">${escapeHtml(unit)}</span></span>
+                                </div>
+                                <div class="flex items-center justify-between gap-2 rounded-lg border border-blue-100 bg-blue-50/50 px-3 py-2">
+                                    <span class="text-xs font-medium uppercase tracking-wide text-blue-700">Remaining</span>
+                                    <span class="shrink-0 text-base font-bold text-blue-900">${remaining} <span class="text-xs font-normal text-blue-700">${escapeHtml(unit)}</span></span>
+                                </div>
+                                <div class="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2">
+                                    <span class="text-xs font-medium uppercase tracking-wide text-slate-500">Administered</span>
+                                    <span class="shrink-0 text-base font-bold text-slate-800">${administered} <span class="text-xs font-normal text-slate-500">${escapeHtml(unit)}</span></span>
+                                </div>
+                            </div>
+                            <div aria-label="${remainingPercent}% of received quantity remains">
+                                <div class="mb-1 flex justify-between text-xs text-slate-500"><span>Quantity remaining</span><span>${remainingPercent}%</span></div>
+                                <div class="h-2 overflow-hidden rounded-full bg-slate-100"><div class="h-full rounded-full bg-blue-500 transition-all" style="width:${remainingPercent}%"></div></div>
+                            </div>
+                            <div class="rounded-lg ${row.intake_status === 'Needs Reconciliation' ? 'border border-amber-200 bg-amber-50/70' : 'border border-slate-200 bg-slate-50'} p-3">
+                                ${row.intake_status === 'Needs Reconciliation' ? `<div class="mb-2">
+                                    <h3 class="font-semibold text-amber-950">Confirm the starting quantity</h3>
+                                    <p class="mt-0.5 text-xs leading-relaxed text-amber-900">This item was received before dose logging began. Count what is left before recording doses or discharge.</p>
+                                </div>
+                                <div class="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+                                    <label class="min-w-0 text-xs font-medium text-slate-600">Actual quantity remaining
+                                        <input type="number" min="0" max="${received}" step="1" data-reconcile-quantity placeholder="0–${received}" aria-label="Actual remaining quantity for ${escapeHtml(row.item_name)}" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                                    </label>
+                                    <button type="button" data-reconcile-intake="${Number(row.fulfillment_item_id)}" aria-label="Confirm actual quantity remaining" ${row.admission_status === 'Ready for Discharge' ? 'disabled' : ''} class="inline-flex items-center justify-center whitespace-nowrap rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">Confirm</button>
+                                </div>
+                                <input type="text" maxlength="500" data-reconcile-notes placeholder="Optional reconciliation note" aria-label="Reconciliation note for ${escapeHtml(row.item_name)}" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">`
+                                    : row.admission_status === 'Ready for Discharge'
+                                        ? '<p class="text-sm font-medium text-slate-600">Intake recording is locked after discharge readiness.</p>'
+                                        : row.intake_status === 'Completed'
+                                            ? '<p class="text-sm font-medium text-emerald-800">All remaining quantity has been accounted for.</p>'
+                                            : `<h3 class="font-semibold text-slate-900">Record an administered dose</h3>
+                                                <p class="mt-0.5 text-xs text-slate-600">Enter the quantity actually given. Remaining quantity and status update automatically.</p>
+                                                <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end">
+                                                    <label class="flex-1 text-xs font-medium text-slate-600">Quantity administered
+                                                        <input type="number" min="1" max="${remaining}" step="1" data-dose-quantity placeholder="Dose quantity" aria-label="Quantity administered for ${escapeHtml(row.item_name)}" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                                                    </label>
+                                                    <button type="button" data-record-dose="${Number(row.fulfillment_item_id)}" ${remaining === 0 ? 'disabled' : ''} class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">Record dose</button>
+                                                </div>
+                                                <input type="text" maxlength="500" data-dose-notes placeholder="Optional note (e.g. time or observation)" aria-label="Dose note for ${escapeHtml(row.item_name)}" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">`}
+                            </div>
+                            <details class="rounded-lg border border-slate-200">
+                                <summary class="cursor-pointer list-inside px-3 py-2 text-sm font-semibold text-slate-700">Dose and reconciliation history <span class="font-normal text-slate-500">(${events.length})</span></summary>
+                                ${events.length ? `<ol class="space-y-2 border-t border-slate-100 px-3 py-2">${events.map(entry => `<li class="flex gap-2 text-xs">
+                                    <span class="mt-1.5 h-2 w-2 shrink-0 rounded-full ${entry.event_type === 'Administered' ? 'bg-blue-500' : entry.event_type === 'Reconciled' ? 'bg-amber-500' : 'bg-slate-400'}"></span>
+                                    <span><strong class="text-slate-800">${escapeHtml(entry.event_type)}</strong> · ${Number(entry.quantity)}${entry.event_type === 'Administered' ? ' administered' : entry.event_type === 'Reconciled' ? ' remaining after count' : entry.event_type === 'Starting Balance' ? ' initially received' : ' received'}<span class="block mt-0.5 text-slate-500">${escapeHtml(date(entry.recorded_datetime, true))} · ${escapeHtml([entry.first_name, entry.last_name].filter(Boolean).join(' ') || 'User unavailable')}</span>${entry.notes ? `<span class="mt-1 block text-slate-600">${escapeHtml(entry.notes)}</span>` : ''}</span>
+                                </li>`).join('')}</ol>` : '<p class="border-t border-slate-100 px-3 py-2 text-xs text-slate-500">No intake events have been recorded yet.</p>'}
+                            </details>
+                        </div>
+                    </article>`;
+                }).join('');
+
+                cards.querySelectorAll('[data-record-dose]').forEach(button => {
+                button.addEventListener('click', async () => {
+                    const row = button.closest('[data-intake-row]');
+                    const quantityInput = row.querySelector('[data-dose-quantity]');
+                    const quantity = Number(quantityInput.value);
+                    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > Number(quantityInput.max)) {
+                        showNotice('Dose quantity must be a positive whole number no greater than the remaining quantity.');
+                        return;
+                    }
+                    const selectedItemId = Number(button.dataset.recordDose);
+                    const selectedItem = rows.find(item => Number(item.fulfillment_item_id) === selectedItemId);
+                    const admissionId = selectedItem ? Number(selectedItem.admission_id) : selectedAdmissionId;
+                    button.disabled = true;
+                    try {
+                        const result = await request('record-medicine-dose', {
+                            method: 'POST',
+                            body: {
+                                fulfillment_item_id: selectedItemId,
+                                quantity_administered: quantity,
+                                notes: row.querySelector('[data-dose-notes]').value,
+                            },
+                        });
+                        selectedAdmissionId = admissionId;
+                        selectedFulfillmentItemId = selectedItemId;
+                        persistSelection();
+                        showNotice(result.message || 'Dose recorded.', true);
+                        render(await request('medicine-intakes'));
+                    } catch (error) {
+                        showNotice(error.message);
+                        button.disabled = false;
+                    }
+                });
+            });
+                cards.querySelectorAll('[data-reconcile-intake]').forEach(button => {
+                button.addEventListener('click', async () => {
+                    const row = button.closest('[data-intake-row]');
+                    const quantityInput = row.querySelector('[data-reconcile-quantity]');
+                    const quantity = Number(quantityInput.value);
+                    if (quantityInput.value === '' || !Number.isInteger(quantity) || quantity < 0
+                        || quantity > Number(quantityInput.max)) {
+                        showNotice('Enter the actual remaining whole-number quantity, from zero to the amount received.');
+                        return;
+                    }
+                    const selectedItemId = Number(button.dataset.reconcileIntake);
+                    const selectedItem = rows.find(item => Number(item.fulfillment_item_id) === selectedItemId);
+                    const admissionId = selectedItem ? Number(selectedItem.admission_id) : selectedAdmissionId;
+                    button.disabled = true;
+                    try {
+                        const result = await request('reconcile-medicine-intake', {
+                            method: 'POST',
+                            body: {
+                                fulfillment_item_id: selectedItemId,
+                                quantity_remaining: quantity,
+                                notes: row.querySelector('[data-reconcile-notes]').value,
+                            },
+                        });
+                        selectedAdmissionId = admissionId;
+                        selectedFulfillmentItemId = selectedItemId;
+                        persistSelection();
+                        showNotice(result.message || 'Starting quantity reconciled.', true);
+                        render(await request('medicine-intakes'));
+                    } catch (error) {
+                        showNotice(error.message);
+                        button.disabled = false;
+                    }
+                });
+            });
+            };
+
+            renderCards();
+        };
+
+        try {
+            render(await request('medicine-intakes'));
+        } catch (error) {
+            target.innerHTML = emptyState('Could not load medicine intake records.', error.message);
+        }
+    }
 
     async function initNurseOrderEntry() {
         const target = document.getElementById('nurseOrderEntry') || root;
@@ -657,7 +1063,7 @@ function initializeNursePage(event) {
                 } catch (error) { showNotice(error.message); button.disabled = false; }
             });
             target.querySelectorAll('[data-remove-doctor]').forEach(button => button.addEventListener('click', async () => {
-                if (!confirm(`Remove ${button.dataset.name} from this admission?`)) return;
+                if (!await window.confirmWithSweetAlert(`Remove ${button.dataset.name} from this admission?`)) return;
                 button.disabled = true;
                 try {
                     await request('remove-doctor', { method: 'POST', params: { id: button.dataset.removeDoctor }, body: { admission_doctor_id: button.dataset.removeDoctor } });
@@ -680,7 +1086,8 @@ function initializeNursePage(event) {
         'discharge-ready': initDischargeReady,
         'room-assignments': initRoomAssignments,
         'order-entry': initNurseOrderEntry,
-        'fulfillment-receipts': loadFulfillmentReceipts
+        'fulfillment-receipts': loadFulfillmentReceipts,
+        'medicine-intakes': loadMedicineIntakes
     }[view];
     if (init && root.dataset.nurseInitStarted !== 'true') {
         root.dataset.nurseInitStarted = 'true';

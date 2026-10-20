@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/../includes/ws_notify.php';
+
 class DiagnosisController
 {
     private PDO $pdo;
@@ -38,10 +40,13 @@ class DiagnosisController
             !empty($data['description']) ? $data['description'] : null,
         ]);
 
+        $id = (int)$this->pdo->lastInsertId();
+        ws_broadcast('master.updated', ['resource' => 'diagnoses', 'operation' => 'create', 'id' => $id], [1, 2]);
+
         $this->json(201, [
             'success' => true,
             'message' => 'Diagnosis created successfully.',
-            'id'      => (int)$this->pdo->lastInsertId(),
+            'id'      => $id,
         ]);
     }
 
@@ -73,6 +78,8 @@ class DiagnosisController
             $id,
         ]);
 
+        ws_broadcast('master.updated', ['resource' => 'diagnoses', 'operation' => 'update', 'id' => $id], [1, 2]);
+
         $this->json(200, ['success' => true, 'message' => 'Diagnosis updated successfully.']);
     }
 
@@ -90,6 +97,8 @@ class DiagnosisController
 
         $stmt = $this->pdo->prepare('UPDATE `diagnosis` SET is_active = ? WHERE diagnosis_id = ?');
         $stmt->execute([$newState, $id]);
+
+        ws_broadcast('master.updated', ['resource' => 'diagnoses', 'operation' => 'toggle-active', 'id' => $id, 'is_active' => $newState], [1, 2]);
 
         $this->json(200, [
             'success'   => true,
@@ -126,6 +135,8 @@ class DiagnosisController
 
         $stmt = $this->pdo->prepare('DELETE FROM `diagnosis` WHERE diagnosis_id = ?');
         $stmt->execute([$id]);
+
+        ws_broadcast('master.updated', ['resource' => 'diagnoses', 'operation' => 'delete', 'id' => $id], [1, 2]);
 
         $this->json(200, ['success' => true, 'message' => 'Diagnosis permanently deleted.']);
     }

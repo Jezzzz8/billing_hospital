@@ -1,7 +1,7 @@
 <?php
-
 require_once __DIR__ . '/../../config/config.php';
 require_once __DIR__ . '/../../config/connection.php';
+require_once __DIR__ . '/../../includes/ws_notify.php';
 require_once __DIR__ . '/../../controllers/CashierController.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -23,6 +23,7 @@ if ($id <= 0 || $paymentId <= 0) {
 
 try {
     $controller->removePayment($id, $paymentId);
+    ws_broadcast('billing.payment.removed', ['statement_id' => $id, 'payment_id' => $paymentId], [1, 4]);
     echo json_encode(['success' => true, 'message' => 'Payment removed.']);
 } catch (Throwable $e) {
     http_response_code(500);

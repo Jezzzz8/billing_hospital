@@ -80,6 +80,7 @@ $allowed = [
         'nurse-admission-create',
         'nurse-admissions',
         'nurse-fulfillment-receipts',
+        'nurse-medicine-intakes',
         'nurse-room-assignments',
         'nurse-room-board',
         'nurse-discharge-ready',
@@ -90,6 +91,7 @@ $allowed = [
         'department',
         'department-queue',
         'department-fulfillment',
+        'pharmacy-stock',
     ],
 ];
 
@@ -140,6 +142,8 @@ if ($roleId === 1) {
 } elseif ($roleId === 5) {
     if ($page === 'department') {
         $contentFile = __DIR__ . '/views/department/dashboard.php';
+    } elseif ($page === 'pharmacy-stock') {
+        $contentFile = __DIR__ . '/views/department/pharmacy-stock.php';
     } elseif (str_starts_with($page, 'department-')) {
         $viewName = substr($page, 11);
         $contentFile = __DIR__ . '/views/department/' . $viewName . '.php';
@@ -192,7 +196,9 @@ $masterPages = [
 $jsCandidates = [];
 $pageScriptIsModule = false;
 
-if ($roleId === 1 && in_array($page, $masterPages, true)) {
+if ($roleId === 5 && $page === 'pharmacy-stock') {
+    $jsCandidates[] = '/assets/js/pharmacy-stock.js';
+} elseif ($roleId === 1 && in_array($page, $masterPages, true)) {
     $jsCandidates[] = '/assets/js/master.js';
     $pageScriptIsModule = true;
 } elseif ($roleId === 1 && $page === 'patients') {
@@ -210,8 +216,9 @@ if ($roleId === 1 && in_array($page, $masterPages, true)) {
 
 $pageScript = null;
 foreach ($jsCandidates as $relPath) {
-    if (file_exists(__DIR__ . $relPath)) {
-        $pageScript = BASE_URL . $relPath;
+    $scriptPath = __DIR__ . $relPath;
+    if (file_exists($scriptPath)) {
+        $pageScript = BASE_URL . $relPath . '?v=' . filemtime($scriptPath);
         break;
     }
 }
@@ -219,6 +226,18 @@ foreach ($jsCandidates as $relPath) {
 $currentPage = $page;
 
 require_once __DIR__ . '/config/connection.php';
+
+if ($roleId === 5 && $page === 'pharmacy-stock') {
+    $departmentCodeStmt = $pdo->prepare(
+        'SELECT department_code FROM `department` WHERE department_id = ? LIMIT 1'
+    );
+    $departmentCodeStmt->execute([(int)($currentUser['department_id'] ?? 0)]);
+    if ($departmentCodeStmt->fetchColumn() !== 'PHARM') {
+        http_response_code(403);
+        echo 'Access denied. Pharmacy stock is available only to Pharmacy department accounts.';
+        exit;
+    }
+}
 
 if (isset($_GET['partial']) && $_GET['partial'] === '1') {
     header('Content-Type: text/html; charset=UTF-8');

@@ -70,6 +70,7 @@ $dept = $stmt->fetch();
                     </thead>
                     <tbody class="divide-y divide-slate-100">
                         <?php foreach (array_slice($queue, 0, 10) as $request): ?>
+                            <?php $requestStatus = $controller->getRequestStatusPresentation($request); ?>
                             <tr class="hover:bg-slate-50">
                                 <td class="px-6 py-4">
                                     <p class="font-medium text-slate-800">#<?= (int)($request['request_id'] ?? 0) ?></p>
@@ -85,8 +86,8 @@ $dept = $stmt->fetch();
                                     </span>
                                 </td>
                                 <td class="px-6 py-4">
-                                    <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium <?= in_array((string)($request['status'] ?? ''), ['Pending', 'In Progress'], true) ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700' ?>">
-                                        <?= htmlspecialchars((string)($request['status'] ?? 'Pending')) ?>
+                                    <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-medium <?= htmlspecialchars($requestStatus['class']) ?>">
+                                        <?= htmlspecialchars($requestStatus['label']) ?>
                                     </span>
                                 </td>
                                 <td class="px-6 py-4 text-right">

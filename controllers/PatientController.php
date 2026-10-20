@@ -32,7 +32,7 @@ class PatientController
                         SELECT a2.admission_id
                         FROM `admission` a2
                         WHERE a2.patient_id = p.patient_id
-                        ORDER BY a2.admission_datetime DESC
+                        ORDER BY a2.admission_datetime DESC, a2.admission_id DESC
                         LIMIT 1
                     )
             LEFT JOIN `admission_status` ast ON ast.status_id = a.status_id
@@ -70,7 +70,7 @@ class PatientController
                         SELECT a2.admission_id
                         FROM `admission` a2
                         WHERE a2.patient_id = p.patient_id
-                        ORDER BY a2.admission_datetime DESC
+                        ORDER BY a2.admission_datetime DESC, a2.admission_id DESC
                         LIMIT 1
                     )
             WHERE p.patient_id = ?
@@ -299,13 +299,18 @@ class PatientController
             $admissionId = (int)($data['admission_id'] ?? 0);
 
             if ($admissionId > 0) {
+                $statusId = (int)($data['admission_status_id'] ?? 0);
+                $isDischarged = $this->isDischargedStatus($statusId);
                 $stmt = $this->pdo->prepare(
                     'UPDATE `admission`
-                     SET status_id = ?, chief_complaint = ?, admission_type = ?, notes = ?
+                     SET status_id = ?,
+                         discharge_datetime = CASE WHEN ? = 1 THEN COALESCE(discharge_datetime, NOW()) ELSE NULL END,
+                         chief_complaint = ?, admission_type = ?, notes = ?
                      WHERE admission_id = ?'
                 );
                 $stmt->execute([
-                    (int)$data['admission_status_id'],
+                    $statusId,
+                    $isDischarged ? 1 : 0,
                     !empty($data['chief_complaint']) ? $data['chief_complaint'] : null,
                     !empty($data['admission_type']) ? $data['admission_type'] : null,
                     !empty($data['admission_notes']) ? $data['admission_notes'] : null,
@@ -323,7 +328,24 @@ class PatientController
                 $stmt->execute([$admissionId]);
                 $current = $stmt->fetch();
 
-                if ($roomId > 0) {
+                if ($isDischarged) {
+                    $stmt = $this->pdo->prepare(
+                        'SELECT DISTINCT room_id
+                         FROM `room_assignment`
+                         WHERE admission_id = ? AND is_active = 1'
+                    );
+                    $stmt->execute([$admissionId]);
+                    $activeRoomIds = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+                    $stmt = $this->pdo->prepare(
+                        'UPDATE `room_assignment`
+                         SET is_active = 0, end_datetime = COALESCE(end_datetime, NOW())
+                        WHERE admission_id = ? AND is_active = 1'
+                    );
+                    $stmt->execute([$admissionId]);
+                    foreach ($activeRoomIds as $activeRoomId) {
+                        $this->syncRoomStatus($activeRoomId);
+                    }
+                } elseif ($roomId > 0) {
                     if ($current && (int)$current['room_id'] === $roomId) {
                         $this->saveRoomAssignment($admissionId, $data);
                     } else {
@@ -335,11 +357,7 @@ class PatientController
                             );
                             $stmt->execute([$current['room_assignment_id']]);
 
-                            $stmt = $this->pdo->prepare(
-                                'UPDATE `room` SET status_id = (SELECT status_id FROM `room_status` WHERE status_name = "Available" LIMIT 1)
-                                 WHERE room_id = ?'
-                            );
-                            $stmt->execute([$current['room_id']]);
+                            $this->syncRoomStatus((int)$current['room_id']);
                         }
                         $this->saveRoomAssignment($admissionId, $data);
                     }
@@ -352,11 +370,7 @@ class PatientController
                         );
                         $stmt->execute([$current['room_assignment_id']]);
 
-                        $stmt = $this->pdo->prepare(
-                            'UPDATE `room` SET status_id = (SELECT status_id FROM `room_status` WHERE status_name = "Available" LIMIT 1)
-                             WHERE room_id = ?'
-                        );
-                        $stmt->execute([$current['room_id']]);
+                        $this->syncRoomStatus((int)$current['room_id']);
                     }
                 }
 
@@ -369,7 +383,9 @@ class PatientController
                 $this->saveAdmissionDiagnoses($admissionId, $data['diagnoses'] ?? []);
             } elseif (!empty($data['create_admission'])) {
                 $admissionId = $this->createAdmission($patientId, $data);
-                $this->saveRoomAssignment($admissionId, $data);
+                if (!$this->isDischargedStatus((int)($data['admission_status_id'] ?? 0))) {
+                    $this->saveRoomAssignment($admissionId, $data);
+                }
                 $this->saveAdmissionDoctors($admissionId, $data['doctors'] ?? []);
                 $this->saveAdmissionDiagnoses($admissionId, $data['diagnoses'] ?? []);
             }
@@ -430,6 +446,7 @@ class PatientController
             if ($statusId <= 0) $statusId = 1;
         }
 
+        $isDischarged = $this->isDischargedStatus($statusId);
         $dischargedId = 0;
         $stmt = $this->pdo->prepare('SELECT status_id FROM `admission_status` WHERE status_name = "Discharged" LIMIT 1');
         $stmt->execute();
@@ -446,7 +463,9 @@ class PatientController
             $patientId,
             $statusId,
             !empty($data['admission_datetime']) ? $data['admission_datetime'] : date('Y-m-d H:i:s'),
-            !empty($data['discharge_datetime']) ? $data['discharge_datetime'] : null,
+            !empty($data['discharge_datetime'])
+                ? $data['discharge_datetime']
+                : ($isDischarged ? date('Y-m-d H:i:s') : null),
             !empty($data['chief_complaint']) ? $data['chief_complaint'] : null,
             !empty($data['admission_type']) ? $data['admission_type'] : null,
             (int)$_SESSION['user']['user_id'],
@@ -543,14 +562,57 @@ class PatientController
             (int)$_SESSION['user']['user_id'],
         ]);
 
-        $stmt = $this->pdo->prepare(
-            'UPDATE `room`
-             SET status_id = (SELECT status_id FROM `room_status` WHERE status_name = "Occupied" LIMIT 1)
-             WHERE room_id = ?'
-        );
-        $stmt->execute([$roomId]);
+        $this->syncRoomStatus($roomId);
 
         BillingHook::emit($this->pdo, $admissionId);
+    }
+
+    private function isDischargedStatus(int $statusId): bool
+    {
+        if ($statusId <= 0) {
+            throw new RuntimeException('Please select a valid admission status.');
+        }
+
+        $stmt = $this->pdo->prepare(
+            'SELECT status_name FROM `admission_status` WHERE status_id = ? LIMIT 1'
+        );
+        $stmt->execute([$statusId]);
+        $statusName = $stmt->fetchColumn();
+        if ($statusName === false) {
+            throw new RuntimeException('Please select a valid admission status.');
+        }
+
+        return strcasecmp((string)$statusName, 'Discharged') === 0;
+    }
+
+    private function syncRoomStatus(int $roomId): void
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT rs.status_name, rt.capacity,
+                    (SELECT COUNT(*) FROM `room_assignment` ra
+                     WHERE ra.room_id = r.room_id
+                       AND ra.is_active = 1
+                       AND ra.end_datetime IS NULL) AS occupied_beds
+             FROM `room` r
+             INNER JOIN `room_type` rt ON rt.room_type_id = r.room_type_id
+             INNER JOIN `room_status` rs ON rs.status_id = r.status_id
+             WHERE r.room_id = ? LIMIT 1'
+        );
+        $stmt->execute([$roomId]);
+        $room = $stmt->fetch();
+        if (!$room || !in_array($room['status_name'], ['Available', 'Occupied'], true)) {
+            return;
+        }
+
+        $statusName = (int)$room['occupied_beds'] >= (int)$room['capacity']
+            ? 'Occupied'
+            : 'Available';
+        $stmt = $this->pdo->prepare(
+            'UPDATE `room`
+             SET status_id = (SELECT status_id FROM `room_status` WHERE status_name = ? LIMIT 1)
+             WHERE room_id = ?'
+        );
+        $stmt->execute([$statusName, $roomId]);
     }
 
     private function saveAdmissionDoctors(int $admissionId, array $doctors): void

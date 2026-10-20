@@ -144,7 +144,39 @@ try {
             break;
 
         case 'receive-fulfillment-item':
-            echo json_encode($controller->receiveFulfillmentItem());
+            $result = $controller->receiveFulfillmentItem();
+            echo json_encode($result);
+            break;
+
+        case 'medicine-intakes':
+            echo json_encode(['success' => true, 'data' => $controller->getMedicineIntakes()]);
+            break;
+
+        case 'record-medicine-dose':
+            if ($roleId !== 3) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'Only nurses can record administered doses.']);
+                break;
+            }
+            echo json_encode($controller->recordMedicineDose());
+            break;
+
+        case 'record-medicine-doses-batch':
+            if ($roleId !== 3) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'Only nurses can record administered doses.']);
+                break;
+            }
+            echo json_encode($controller->recordMedicineDosesBatch());
+            break;
+
+        case 'reconcile-medicine-intake':
+            if ($roleId !== 3) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'Only nurses can reconcile medicine quantities.']);
+                break;
+            }
+            echo json_encode($controller->reconcileMedicineIntake());
             break;
 
         default:
