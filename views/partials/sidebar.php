@@ -11,6 +11,14 @@ if (!$currentUser) return;
 
 $sidebarSections = $sidebarSections ?? [];
 $currentPage     = $currentPage ?? ($_GET['page'] ?? '');
+$loginPages = [
+    1 => 'admin-login.php',
+    2 => 'doctor-login.php',
+    3 => 'nurse-login.php',
+    4 => 'cashier-login.php',
+    5 => 'department-login.php',
+];
+$logoutRedirect = $logoutRedirect ?? BASE_URL . '/' . ($loginPages[(int)($currentUser['role_id'] ?? 0)] ?? 'index.php');
 ?>
 
 
@@ -97,6 +105,7 @@ $currentPage     = $currentPage ?? ($_GET['page'] ?? '');
             </div>
         </div>
         <button id="logoutBtn"
+                data-logout-redirect="<?= htmlspecialchars($logoutRedirect, ENT_QUOTES, 'UTF-8') ?>"
                 class="mt-3 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition">
             Sign out
         </button>

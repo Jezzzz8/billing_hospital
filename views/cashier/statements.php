@@ -10,7 +10,6 @@ $admissionsOpen = [];
 $statements     = $controller->getAllStatements();
 $statuses       = $controller->getBillingStatuses();
 $paymentTypes   = $controller->getPaymentTypes();
-$chargeItems    = $controller->getChargeItems();
 $totalBilled = 0; $totalPaid = 0; $totalBalance = 0;
 foreach ($statements as $s) {
     $totalBilled  += (float)$s['total_amount'];
@@ -21,15 +20,6 @@ foreach ($statements as $s) {
 
 <div id="cashierData"
      class="hidden"
-     data-charge-items='<?= htmlspecialchars(json_encode(array_map(fn($c) => [
-        'charge_item_id' => (int)$c['charge_item_id'],
-        'item_code'      => $c['item_code'],
-        'item_name'      => $c['item_name'],
-        'default_price'  => (float)$c['default_price'],
-        'is_taxable'     => (int)$c['is_taxable'],
-        'unit'           => $c['unit_of_measure'] ?? '',
-        'category'       => $c['category_name'],
-     ], $chargeItems)), ENT_QUOTES, "UTF-8") ?>'
      data-payment-types='<?= htmlspecialchars(json_encode(array_map(fn($p) => [
         'payment_type_id' => (int)$p['payment_type_id'],
         'type_name'       => $p['type_name'],
@@ -409,13 +399,6 @@ foreach ($statements as $s) {
                             </svg>
                             Recompute Charges
                         </button>
-                        <button type="button" id="addChargeBtn"
-                                class="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100">
-                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                            </svg>
-                            Add Charge
-                        </button>
                     </div>
                 </div>
 
@@ -494,50 +477,6 @@ foreach ($statements as $s) {
     </div>
 </div>
 
-<div id="chargeModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
-    <div class="absolute inset-0 bg-slate-900/60" data-close-charge></div>
-    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md">
-        <div class="flex items-center justify-between px-6 py-5 border-b border-slate-200">
-            <h3 class="text-base font-semibold text-slate-900">Add Charge</h3>
-            <button type="button" data-close-charge class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100">
-                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
-                </svg>
-            </button>
-        </div>
-        <form id="chargeForm" class="p-6 space-y-4">
-            <div>
-                <label class="block text-sm font-medium text-slate-700 mb-1.5">Charge Item</label>
-                <select id="charge_item_id" required class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                    <option value="">— Select item —</option>
-                </select>
-            </div>
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1.5">Quantity</label>
-                    <input type="number" id="charge_quantity" required min="1" step="1" value="1"
-                           class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1.5">Unit Price (₱)</label>
-                    <input type="number" id="charge_price" required min="0" step="0.01" readonly
-                           class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-600">
-                </div>
-            </div>
-            <div>
-                <label class="block text-sm font-medium text-slate-700 mb-1.5">Notes <span class="text-slate-400 font-normal">(optional)</span></label>
-                <input type="text" id="charge_notes" class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-            </div>
-        </form>
-        <div class="px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl flex items-center justify-end gap-3">
-            <button type="button" data-close-charge class="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Cancel</button>
-            <button type="button" id="saveChargeBtn" class="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60">
-                <span id="saveChargeLabel">Add Charge</span>
-            </button>
-        </div>
-    </div>
-</div>
-
 <div id="paymentModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
     <div class="absolute inset-0 bg-slate-900/60" data-close-payment></div>
     <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md">
@@ -590,7 +529,6 @@ foreach ($statements as $s) {
     const baseUrl    = document.body.dataset.baseUrl;
     const alertEl    = document.getElementById('alert');
     const dataEl     = document.getElementById('cashierData');
-    const chargeItems = JSON.parse(dataEl.dataset.chargeItems || '[]');
     const paymentTypes = JSON.parse(dataEl.dataset.paymentTypes || '[]');
 
     let currentStatementId = null;
@@ -888,60 +826,6 @@ foreach ($statements as $s) {
             showAlert('error', err.response?.data?.message || 'Could not save deductions.');
         } finally {
             this.disabled = false;
-        }
-    });
-
-    const chargeModal = document.getElementById('chargeModal');
-    const chargeSelect = document.getElementById('charge_item_id');
-
-    if (chargeSelect) {
-        chargeSelect.innerHTML = '<option value="">— Select item —</option>' +
-            chargeItems.map(c =>
-                `<option value="${c.charge_item_id}" data-price="${c.default_price}">${c.item_name} (${money(c.default_price)})</option>`
-            ).join('');
-
-        chargeSelect.addEventListener('change', function () {
-            const opt = this.selectedOptions[0];
-            document.getElementById('charge_price').value = opt?.dataset.price || '0.00';
-        });
-    }
-
-    document.getElementById('addChargeBtn')?.addEventListener('click', () => chargeModal.classList.remove('hidden'));
-    chargeModal.querySelectorAll('[data-close-charge]').forEach(el =>
-        el.addEventListener('click', () => chargeModal.classList.add('hidden'))
-    );
-
-    document.getElementById('saveChargeBtn')?.addEventListener('click', async function () {
-        if (paymentInFlight) return;
-        paymentInFlight = true;
-
-        const itemId = document.getElementById('charge_item_id').value;
-        const qty = parseInt(document.getElementById('charge_quantity').value) || 0;
-        if (!itemId || qty <= 0) {
-            showAlert('error', 'Please select a charge item and quantity.');
-            paymentInFlight = false;
-            return;
-        }
-
-        this.disabled = true;
-        try {
-            const res = await axios.post(`${baseUrl}/api/cashier/add-charge.php?id=${currentStatementId}`, {
-                charge_item_id: itemId,
-                quantity: qty,
-                actual_price: parseFloat(document.getElementById('charge_price').value) || 0,
-                notes: document.getElementById('charge_notes').value
-            }, { headers: { 'Content-Type': 'application/json' } });
-
-            if (res.data.success) {
-                showAlert('success', res.data.message);
-                chargeModal.classList.add('hidden');
-                openManage(currentStatementId);
-            }
-        } catch (err) {
-            showAlert('error', err.response?.data?.message || 'Could not add charge.');
-        } finally {
-            this.disabled = false;
-            paymentInFlight = false;
         }
     });
 

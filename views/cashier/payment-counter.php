@@ -5,7 +5,6 @@ require_once __DIR__ . '/../../controllers/ChargeSyncService.php';
 
 $controller = new CashierController($pdo);
 $controller->prepareRunningBilling();
-$chargeItems = $controller->getChargeItems();
 
 $statements = $controller->getUnpaidStatements();
 $paymentTypes = $controller->getPaymentTypes();
@@ -22,17 +21,10 @@ $todayPaymentCount = (int)$pdo->query(
 )->fetchColumn();
 ?>
 
-<div id="counterData" class="hidden"
-     data-charge-items='<?= htmlspecialchars(json_encode(array_map(static fn($item) => [
-        'charge_item_id' => (int)$item['charge_item_id'],
-        'item_name' => $item['item_name'],
-        'default_price' => (float)$item['default_price'],
-     ], $chargeItems)), ENT_QUOTES, "UTF-8") ?>'></div>
-
 <div class="mb-8">
     <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Payment Counter</h1>
     <p class="mt-1 text-sm text-slate-500">
-        Review running bills for admitted patients, add charges as services are provided, and collect payments.
+        Review running bills for admitted patients and collect payments.
     </p>
 </div>
 
@@ -174,9 +166,6 @@ $todayPaymentCount = (int)$pdo->query(
                         </td>
                         <td class="px-6 py-4 text-right whitespace-nowrap">
                             <div class="inline-flex items-center gap-2">
-                                <button type="button"
-                                        class="manual-charge-btn rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
-                                        data-statement-id="<?= (int)$s['statement_id'] ?>">Add Charge</button>
                                 <a target="_blank"
                                    href="<?= BASE_URL ?>/index.php?page=cashier-receipt&id=<?= (int)$s['statement_id'] ?>"
                                    class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">View / Print</a>
@@ -202,42 +191,6 @@ $todayPaymentCount = (int)$pdo->query(
         </div>
         <p class="text-sm font-medium text-slate-700">No running or unpaid bills match your filters</p>
         <p class="text-xs text-slate-500 mt-1">Try adjusting your search or wait for a patient admission.</p>
-    </div>
-</div>
-
-<div id="counterChargeModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div class="absolute inset-0 bg-slate-900/60" data-close-counter-charge></div>
-    <div class="relative w-full max-w-md rounded-2xl bg-white shadow-2xl">
-        <div class="flex items-center justify-between border-b border-slate-200 px-6 py-5">
-            <h3 class="text-base font-semibold text-slate-900">Add Manual Charge</h3>
-            <button type="button" data-close-counter-charge class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100">Close</button>
-        </div>
-        <form id="counterChargeForm" class="space-y-4 p-6">
-            <div>
-                <label for="counterChargeItem" class="mb-1.5 block text-sm font-medium text-slate-700">Charge Item</label>
-                <select id="counterChargeItem" required class="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm">
-                    <option value="">— Select item —</option>
-                </select>
-            </div>
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label for="counterChargeQuantity" class="mb-1.5 block text-sm font-medium text-slate-700">Quantity</label>
-                    <input id="counterChargeQuantity" type="number" min="1" step="1" value="1" required class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm">
-                </div>
-                <div>
-                    <label for="counterChargePrice" class="mb-1.5 block text-sm font-medium text-slate-700">Unit price (₱)</label>
-                    <input id="counterChargePrice" type="text" inputmode="decimal" autocomplete="off" required class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm">
-                </div>
-            </div>
-            <div>
-                <label for="counterChargeNotes" class="mb-1.5 block text-sm font-medium text-slate-700">Notes</label>
-                <input id="counterChargeNotes" type="text" class="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm">
-            </div>
-        </form>
-        <div class="flex justify-end gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
-            <button type="button" data-close-counter-charge class="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700">Cancel</button>
-            <button type="button" id="saveCounterCharge" class="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700">Add Charge</button>
-        </div>
     </div>
 </div>
 
@@ -454,13 +407,8 @@ $todayPaymentCount = (int)$pdo->query(
     const collectModal = document.getElementById('collectModal');
     const receiptModal = document.getElementById('receiptModal');
     const collectForm = document.getElementById('collectForm');
-    const counterChargeModal = document.getElementById('counterChargeModal');
-    const counterChargeForm = document.getElementById('counterChargeForm');
-    const chargeItemSelect = document.getElementById('counterChargeItem');
-    const chargeItems = JSON.parse(document.getElementById('counterData').dataset.chargeItems || '[]');
 
     let currentStatementId = null;
-    let chargeStatementId = null;
     let paymentInFlight = false;
 
     function parseCurrency(value) {
@@ -518,22 +466,8 @@ $todayPaymentCount = (int)$pdo->query(
         });
     }
 
-    const chargePriceInput = document.getElementById('counterChargePrice');
     const paymentAmountInput = document.getElementById('col_amount');
-    bindCurrencyInput(chargePriceInput);
     bindCurrencyInput(paymentAmountInput);
-
-    chargeItems.forEach(item => {
-        const option = document.createElement('option');
-        option.value = item.charge_item_id;
-        option.textContent = `${item.item_name} (₱${formatCurrency(item.default_price)})`;
-        option.dataset.price = item.default_price;
-        chargeItemSelect.appendChild(option);
-    });
-    chargeItemSelect.addEventListener('change', () => {
-        const price = chargeItemSelect.selectedOptions[0]?.dataset.price;
-        chargePriceInput.value = price !== undefined ? formatCurrency(price) : '';
-    });
 
     function showAlert(type, msg) {
         if (!alertEl) return;
@@ -661,47 +595,6 @@ $todayPaymentCount = (int)$pdo->query(
         btn.addEventListener('click', function () {
             openCollectModal(this.dataset.statementId);
         });
-    });
-
-    document.querySelectorAll('.manual-charge-btn').forEach(btn => {
-        btn.addEventListener('click', function () {
-            chargeStatementId = this.dataset.statementId;
-            counterChargeModal.classList.remove('hidden');
-        });
-    });
-    counterChargeModal.querySelectorAll('[data-close-counter-charge]').forEach(el => {
-        el.addEventListener('click', () => {
-            counterChargeModal.classList.add('hidden');
-            counterChargeForm.reset();
-            chargeStatementId = null;
-        });
-    });
-    document.getElementById('saveCounterCharge').addEventListener('click', async () => {
-        const itemId = Number(chargeItemSelect.value);
-        const quantity = Number(document.getElementById('counterChargeQuantity').value);
-        const price = parseCurrency(chargePriceInput.value);
-        if (!chargeStatementId || itemId <= 0 || !Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(price) || price < 0) {
-            showAlert('error', 'Select a charge item and enter a valid quantity and price.');
-            return;
-        }
-        const button = document.getElementById('saveCounterCharge');
-        button.disabled = true;
-        try {
-            const response = await axios.post(`${baseUrl}/api/cashier.php?operation=add-charge`, {
-                statement_id: Number(chargeStatementId),
-                charge_item_id: itemId,
-                quantity,
-                actual_price: price,
-                notes: document.getElementById('counterChargeNotes').value
-            });
-            if (!response.data.success) throw new Error(response.data.message || 'Could not add charge.');
-            showAlert('success', response.data.message || 'Manual charge added.');
-            location.reload();
-        } catch (error) {
-            showAlert('error', error.response?.data?.message || error.message || 'Could not add charge.');
-        } finally {
-            button.disabled = false;
-        }
     });
 
     collectModal.querySelectorAll('[data-close-collect]').forEach(el => {

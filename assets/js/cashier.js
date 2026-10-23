@@ -233,9 +233,7 @@ function renderStatementList() {
 }
 
 function fillStatementOptions() {
-    const chargeItems = firstArray(options, ['charge_items', 'chargeItems', 'catalog']);
     const paymentTypes = firstArray(options, ['payment_types', 'paymentTypes']);
-    document.getElementById('charge_item_id').innerHTML = '<option value="">Select item</option>' + chargeItems.map(row => `<option value="${html(row.charge_item_id ?? row.id)}" data-price="${number(row.default_price ?? row.price)}">${html(row.item_name ?? row.name)} (${money(row.default_price ?? row.price)})</option>`).join('');
     const paymentSelect = document.getElementById('payment_type_id');
     paymentSelect.innerHTML = '<option value="">Select type</option>' + paymentTypes.map(row => `<option value="${html(row.payment_type_id ?? row.id)}">${html(row.type_name ?? row.name)}</option>`).join('');
 }
@@ -269,7 +267,7 @@ function bindStatementPage() {
     root.addEventListener('click', async event => {
         const close = event.target.closest('[data-close-modal]');
         if (close) modal(close.dataset.closeModal, false);
-        if (['manageModal', 'chargeModal', 'paymentModal'].includes(event.target.id)) modal(event.target.id, false);
+        if (['manageModal', 'paymentModal'].includes(event.target.id)) modal(event.target.id, false);
         const manage = event.target.closest('[data-manage]');
         if (manage) await openStatement(manage.dataset.manage);
         const tab = event.target.closest('[data-detail-tab]');
@@ -287,23 +285,7 @@ function bindStatementPage() {
         const removePayment = event.target.closest('[data-remove-payment]');
         if (removePayment && await window.confirmWithSweetAlert('Remove this payment?')) await mutate('remove-payment', { statement_id: statementId(activeStatement), payment_id: removePayment.dataset.removePayment }, 'Payment removed.', () => openStatement(statementId(activeStatement)));
     });
-    document.getElementById('charge_item_id').addEventListener('change', event => {
-        const price = event.target.selectedOptions[0]?.dataset.price;
-        if (price) document.getElementById('charge_price').value = price;
-    });
     document.getElementById('syncChargesBtn').addEventListener('click', () => mutate('sync-charges', { statement_id: statementId(activeStatement) }, 'Charges synchronized.', () => openStatement(statementId(activeStatement))));
-    document.getElementById('saveChargeBtn').addEventListener('click', async () => {
-        const itemId = document.getElementById('charge_item_id').value;
-        if (!itemId) return alertMessage('Choose a charge item.');
-        await mutate('add-charge', {
-            statement_id: statementId(activeStatement),
-            charge_item_id: itemId,
-            quantity: number(document.getElementById('charge_quantity').value),
-            actual_price: number(document.getElementById('charge_price').value),
-            notes: document.getElementById('charge_notes').value
-        }, 'Charge added.', async () => { modal('chargeModal', false); await openStatement(statementId(activeStatement)); });
-    });
-    document.getElementById('addChargeBtn').addEventListener('click', () => modal('chargeModal', true));
     document.getElementById('addPaymentBtn').addEventListener('click', () => {
         document.getElementById('paymentCurrentBalance').textContent = money(activeStatement?.balance_amount);
         document.getElementById('payment_amount').value = number(activeStatement?.balance_amount).toFixed(2);

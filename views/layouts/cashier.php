@@ -1,7 +1,7 @@
 <?php
 
 $pageTitle  = $pageTitle  ?? 'Cashier Dashboard';
-$pageScript = $pageScript ?? BASE_URL . '/assets/js/logout.js';
+$logoutRedirect = BASE_URL . '/cashier-login.php';
 
 require __DIR__ . '/../partials/header.php';
 

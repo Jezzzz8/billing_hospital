@@ -22,7 +22,7 @@ function patient_portal_input(): array
     return $_POST;
 }
 
-function patient_portal_dashboard(PDO $pdo, int $patientId): array
+function patient_portal_records(PDO $pdo, int $patientId): array
 {
     $patientStmt = $pdo->prepare(
         'SELECT patient_id, first_name, last_name, birth_date, medical_history
@@ -88,25 +88,12 @@ function patient_portal_dashboard(PDO $pdo, int $patientId): array
     $statementStmt->execute([$patientId]);
     $statements = $statementStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $chargeStmt = $pdo->prepare(
-        'SELECT c.statement_id, c.charge_datetime, ci.item_name, c.quantity, c.actual_price,
-                c.amount
-         FROM `charge` c
-         INNER JOIN `billing_statement` bs ON bs.statement_id = c.statement_id
-         INNER JOIN `admission` a ON a.admission_id = bs.admission_id
-         INNER JOIN `charge_item` ci ON ci.charge_item_id = c.charge_item_id
-         WHERE a.patient_id = ?
-         ORDER BY c.statement_id DESC, c.charge_datetime, c.charge_id'
-    );
-    $chargeStmt->execute([$patientId]);
-
     return [
         'patient' => $patient,
         'admissions' => $admissions,
         'diagnoses' => $diagnoses,
         'consultations' => $consultations,
         'statements' => $statements,
-        'charges' => $chargeStmt->fetchAll(PDO::FETCH_ASSOC),
     ];
 }
 
@@ -145,9 +132,10 @@ if ($operation === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         || time() - (int)($captcha['created_at'] ?? 0) > 300
         || !hash_equals((string)$captcha['answer'], $answer)
     ) {
-        patient_portal_json(401, ['success' => false, 'message' => 'Invalid name, date of birth, or CAPTCHA answer.']);
+        patient_portal_json(401, ['success' => false, 'message' => 'Invalid Patient ID, name, date of birth, or CAPTCHA answer.']);
     }
 
+    $patientId = filter_var($input['patient_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
     $firstName = trim((string)($input['first_name'] ?? ''));
     $lastName = trim((string)($input['last_name'] ?? ''));
     $birthDate = trim((string)($input['birth_date'] ?? ''));
@@ -157,21 +145,21 @@ if ($operation === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         && ($dateErrors === false || ($dateErrors['warning_count'] === 0 && $dateErrors['error_count'] === 0))
         && $date->format('Y-m-d') === $birthDate;
 
-    if ($firstName === '' || $lastName === '' || strlen($firstName) > 100
+    if ($patientId === false || $firstName === '' || $lastName === '' || strlen($firstName) > 100
         || strlen($lastName) > 100 || !$validDate) {
-        patient_portal_json(401, ['success' => false, 'message' => 'Invalid name, date of birth, or CAPTCHA answer.']);
+        patient_portal_json(401, ['success' => false, 'message' => 'Invalid Patient ID, name, date of birth, or CAPTCHA answer.']);
     }
 
     try {
         $stmt = $pdo->prepare(
             'SELECT patient_id FROM `patient`
-             WHERE first_name = ? AND last_name = ? AND birth_date = ? AND is_active = 1
-             LIMIT 2'
+             WHERE patient_id = ? AND first_name = ? AND last_name = ? AND birth_date = ? AND is_active = 1
+             LIMIT 1'
         );
-        $stmt->execute([$firstName, $lastName, $birthDate]);
-        $matchingPatients = $stmt->fetchAll(PDO::FETCH_COLUMN);
-        if (count($matchingPatients) !== 1) {
-            patient_portal_json(401, ['success' => false, 'message' => 'Invalid name, date of birth, or CAPTCHA answer.']);
+        $stmt->execute([$patientId, $firstName, $lastName, $birthDate]);
+        $matchedPatientId = $stmt->fetchColumn();
+        if ($matchedPatientId === false) {
+            patient_portal_json(401, ['success' => false, 'message' => 'Invalid Patient ID, name, date of birth, or CAPTCHA answer.']);
         }
     } catch (Throwable $error) {
         error_log('[patient_portal_login] ' . $error->getMessage());
@@ -181,7 +169,7 @@ if ($operation === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     session_regenerate_id(true);
     $_SESSION = [
         'patient_portal' => [
-            'patient_id' => (int)$matchingPatients[0],
+            'patient_id' => (int)$matchedPatientId,
             'last_activity' => time(),
         ],
     ];
@@ -210,15 +198,15 @@ if ($operation === 'touch' && $_SERVER['REQUEST_METHOD'] === 'GET') {
     patient_portal_json(200, ['success' => true]);
 }
 
-if ($operation === 'dashboard' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+if ($operation === 'records' && $_SERVER['REQUEST_METHOD'] === 'GET') {
     $patientId = (int)($_SESSION['patient_portal']['patient_id'] ?? 0);
     if ($patientId <= 0) {
         patient_portal_json(401, ['success' => false, 'message' => 'Your portal session has ended. Please sign in again.']);
     }
     try {
-        patient_portal_json(200, ['success' => true, 'data' => patient_portal_dashboard($pdo, $patientId)]);
+        patient_portal_json(200, ['success' => true, 'data' => patient_portal_records($pdo, $patientId)]);
     } catch (Throwable $error) {
-        error_log('[patient_portal_dashboard] ' . $error->getMessage());
+        error_log('[patient_portal_records] ' . $error->getMessage());
         patient_portal_json(500, ['success' => false, 'message' => 'Could not load your patient records. Please try again.']);
     }
 }

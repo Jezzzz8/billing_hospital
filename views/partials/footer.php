@@ -1,10 +1,11 @@
 <?php
 $pageScript = $pageScript ?? null;
 $pageScriptIsModule = (bool)($pageScriptIsModule ?? false);
+$logoutScriptPath = __DIR__ . '/../../assets/js/logout.js';
 ?>
 <script src="<?= htmlspecialchars(BASE_URL . '/assets/js/vendor/sweetalert2.all.min.js') ?>"></script>
 <script src="<?= htmlspecialchars(BASE_URL . '/assets/js/sweetalert-notifications.js') ?>"></script>
-<script src="<?= htmlspecialchars(BASE_URL . '/assets/js/logout.js') ?>"></script>
+<script src="<?= htmlspecialchars(BASE_URL . '/assets/js/logout.js?v=' . (file_exists($logoutScriptPath) ? filemtime($logoutScriptPath) : time())) ?>"></script>
 <?php if (!empty($pageScript)): ?>
     <?php if ($pageScriptIsModule): ?>
         <script type="module" src="<?= htmlspecialchars($pageScript) ?>"></script>

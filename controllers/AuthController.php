@@ -22,9 +22,14 @@ class AuthController
 
         $email    = trim((string)($data['email'] ?? $data['username'] ?? ''));
         $password = (string)($data['password'] ?? '');
+        $expectedRoleId = filter_var(
+            $data['expected_role_id'] ?? $_GET['expected_role_id'] ?? null,
+            FILTER_VALIDATE_INT,
+            ['options' => ['min_range' => 1, 'max_range' => 5]]
+        );
 
-        if ($email === '' || $password === '') {
-            $this->json(422, ['success' => false, 'message' => 'Email and password are required.']);
+        if ($email === '' || $password === '' || $expectedRoleId === false) {
+            $this->json(422, ['success' => false, 'message' => 'Choose a staff login and enter your email and password.']);
         }
 
         $sql = 'SELECT u.user_id, u.username, u.password_hash, u.first_name, u.last_name,
@@ -54,6 +59,10 @@ class AuthController
 
         if ((int)$user['is_active'] !== 1) {
             $this->json(403, ['success' => false, 'message' => 'Account is inactive. Contact an administrator.']);
+        }
+
+        if ((int)$user['role_id'] !== $expectedRoleId) {
+            $this->json(403, ['success' => false, 'message' => 'These credentials do not belong to this staff login.']);
         }
 
         if (session_status() === PHP_SESSION_NONE) {

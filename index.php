@@ -10,6 +10,7 @@ header('Expires: 0');
 require_once __DIR__ . '/config/config.php';
 
 if (empty($_SESSION['user'])) {
+    $loginRoleId = 0;
     require __DIR__ . '/views/login.php';
     exit;
 }

@@ -12,6 +12,10 @@
 
 The application expects to be served from `/billing_hospital` by default; update `BASE_URL` in `config/config.php` if your local URL differs.
 
+## Staff access
+
+Staff sign in through the portal URL for their assigned role: `/admin-login.php`, `/doctor-login.php`, `/nurse-login.php`, `/cashier-login.php`, or `/department-login.php`. The site root links to the patient portal; `index.php` remains the application router for authenticated staff pages. The login API verifies that the authenticated account's assigned role matches the selected portal, and the application continues enforcing role-specific page and API access after sign-in.
+
 ## Live updates
 
 The realtime notification and update service runs separately from Apache. Start it with `start-websocket.bat` and leave its console window running while using the application. WebSocket clients connect on port `8080`; the same process binds the patient-portal in-memory sign-in rate limiter to loopback port `8081`. Allow port `8080` through the local firewall when accessing the application from another device; do not expose port `8081`.
@@ -20,7 +24,7 @@ For HTTPS deployments, configure the web server to proxy secure WebSocket (`wss`
 
 ## Patient portal
 
-Patients can sign in at `/billing_hospital/patient-portal.php` with their first name, last name, date of birth, and the on-page math CAPTCHA. Sign-in is rejected if more than one active patient matches the same name and date of birth. The portal does not store a password or date of birth in the session. Sign-ins are limited to ten attempts per IP address in a 15-minute window by the in-memory limiter, so the local WebSocket/limiter process must be running. Patient sessions expire after five minutes of inactivity. From the portal, patients can view, print, or download their own cashier-format statements of account.
+Patients can sign in at `/billing_hospital/patient-portal.php` with their Patient ID, first name, last name, date of birth, and the on-page math CAPTCHA. The portal immediately displays billing statements and other available patient records without summary cards. Each statement opens the cashier-format receipt, which can be printed or downloaded. The portal does not store a password or date of birth in the session. Sign-ins are limited to ten attempts per IP address in a 15-minute window by the in-memory limiter, so the local WebSocket/limiter process must be running. Patient sessions expire after five minutes of inactivity.
 
 Medicine and other stock-tracked Pharmacy items remain charged after they are dispensed and received. Nursing records each administered quantity in the Medicine Intake Monitor; the system reduces the remaining quantity and derives the intake status automatically. A separate intake log records doses, starting balances, and legacy quantity reconciliations. Items received before dose logging was enabled must be reconciled to the actual quantity remaining before discharge. When the attending doctor marks a patient ready for discharge, they choose whether each remaining stock-tracked item goes home with the patient or is returned to Pharmacy. Take-home items keep their charges. Pharmacy must confirm the quantity physically received before a negative `MEDICINE_RETURN` charge credits the bill at the original unit price; only the quantity Pharmacy marks safe to restock is added back to inventory. The original fulfillment and charge remain in the audit trail.
 

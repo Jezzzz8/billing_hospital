@@ -2,7 +2,7 @@
     const baseUrl = document.body.dataset.baseUrl;
     const apiUrl = `${baseUrl}/api/patient-portal.php`;
     const loginSection = document.getElementById('patientPortalLogin');
-    const dashboardSection = document.getElementById('patientPortalDashboard');
+    const recordsSection = document.getElementById('patientPortalRecords');
     const loginForm = document.getElementById('patientPortalLoginForm');
     const loginError = document.getElementById('portalLoginError');
     const loginButton = document.getElementById('patientPortalLoginButton');
@@ -12,6 +12,7 @@
     const content = document.getElementById('patientPortalContent');
     let idleTimer;
     let lastActivity = Date.now();
+    let captchaReady = false;
 
     const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -47,9 +48,16 @@
     }
 
     async function refreshCaptcha() {
-        const result = await request('captcha');
-        captchaQuestion.textContent = result.question;
-        captchaAnswer.value = '';
+        captchaReady = false;
+        loginButton.disabled = true;
+        try {
+            const result = await request('captcha');
+            captchaQuestion.textContent = result.question;
+            captchaAnswer.value = '';
+            captchaReady = true;
+        } finally {
+            loginButton.disabled = !captchaReady;
+        }
     }
 
     function showLoginError(message) {
@@ -57,7 +65,7 @@
         loginError.classList.remove('hidden');
     }
 
-    function renderDashboard(data) {
+    function renderPatientRecords(data) {
         const patient = data.patient;
         const statementRows = data.statements.length
             ? data.statements.map(statement => `
@@ -71,27 +79,32 @@
                     <td class="px-4 py-3 text-right"><a target="_blank" rel="noopener" href="${baseUrl}/patient-statement.php?statement_id=${Number(statement.statement_id)}" class="whitespace-nowrap rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100">View Statement</a></td>
                 </tr>`).join('')
             : '<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">No billing statements available.</td></tr>';
-        const chargeRows = data.charges.length
-            ? data.charges.map(charge => `
-                <tr class="border-t border-slate-100">
-                    <td class="px-4 py-3">${escapeHtml(date(charge.charge_datetime))}</td>
-                    <td class="px-4 py-3">#${Number(charge.statement_id)}</td>
-                    <td class="px-4 py-3">${escapeHtml(charge.item_name)}</td>
-                    <td class="px-4 py-3 text-right">${Number(charge.quantity)}</td>
-                    <td class="px-4 py-3 text-right">${money(charge.amount)}</td>
-                </tr>`).join('')
-            : '<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">No itemized charges available.</td></tr>';
-        const admissions = data.admissions.length
-            ? data.admissions.map(admission => `
-                <article class="rounded-lg border border-slate-200 p-4">
-                    <div class="flex flex-wrap items-center justify-between gap-2">
-                        <h3 class="font-semibold text-slate-900">Admission #${Number(admission.admission_id)}</h3>
-                        <span class="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">${escapeHtml(admission.status)}</span>
+        const statementCards = data.statements.length
+            ? data.statements.map(statement => `
+                <article class="p-4">
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <h3 class="font-semibold text-slate-900">Statement #${Number(statement.statement_id)}</h3>
+                            <p class="mt-1 text-xs text-slate-500">Admission #${Number(statement.admission_id)} · ${escapeHtml(date(statement.statement_date))}</p>
+                        </div>
+                        <span class="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">${escapeHtml(statement.status)}</span>
                     </div>
-                    <p class="mt-2 text-sm text-slate-600">${escapeHtml(admission.chief_complaint || 'No reason recorded')}</p>
-                    <p class="mt-1 text-xs text-slate-500">${escapeHtml(date(admission.admission_datetime))}${admission.discharge_datetime ? ` – ${escapeHtml(date(admission.discharge_datetime))}` : ''}</p>
+                    <dl class="mt-4 grid grid-cols-2 gap-x-4 gap-y-3">
+                        <div><dt class="text-xs text-slate-500">Total</dt><dd class="mt-0.5 text-sm font-medium text-slate-900">${money(statement.total_amount)}</dd></div>
+                        <div><dt class="text-xs text-slate-500">Paid</dt><dd class="mt-0.5 text-sm font-medium text-slate-900">${money(statement.amount_paid)}</dd></div>
+                        <div class="col-span-2"><dt class="text-xs text-slate-500">Balance</dt><dd class="mt-0.5 text-base font-semibold text-slate-900">${money(statement.balance_amount)}</dd></div>
+                    </dl>
+                    <a target="_blank" rel="noopener" href="${baseUrl}/patient-statement.php?statement_id=${Number(statement.statement_id)}" class="mt-4 inline-flex w-full items-center justify-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100">View Statement</a>
                 </article>`).join('')
-            : '<p class="text-sm text-slate-500">No admissions recorded.</p>';
+            : '<p class="px-4 py-8 text-center text-sm text-slate-500">No billing statements available.</p>';
+        const admissions = data.admissions.length
+            ? data.admissions.map(admission => `<tr class="border-t border-slate-100">
+                    <td class="px-4 py-3">Admission #${Number(admission.admission_id)}</td>
+                    <td class="px-4 py-3">${escapeHtml(admission.chief_complaint || 'No reason recorded')}</td>
+                    <td class="px-4 py-3">${escapeHtml(date(admission.admission_datetime))}${admission.discharge_datetime ? ` – ${escapeHtml(date(admission.discharge_datetime))}` : ''}</td>
+                    <td class="px-4 py-3">${escapeHtml(admission.status)}</td>
+                </tr>`).join('')
+            : '<tr><td colspan="4" class="px-4 py-6 text-center text-sm text-slate-500">No admissions recorded.</td></tr>';
         const diagnoses = data.diagnoses.length
             ? data.diagnoses.map(diagnosis => `
                 <li class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-3 first:pt-0 last:pb-0">
@@ -111,39 +124,32 @@
 
         content.innerHTML = `
             <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
-                <div><p class="text-sm font-medium text-blue-700">Patient Portal</p>
-                    <h1 class="mt-1 text-2xl font-bold tracking-tight text-slate-900">Welcome, ${escapeHtml(patient.first_name)}</h1>
-                    <p class="mt-1 text-sm text-slate-600">${escapeHtml(`${patient.first_name} ${patient.last_name}`)} · Date of birth ${escapeHtml(date(patient.birth_date))}</p></div>
+                <div><p class="text-sm font-medium text-blue-700">Patient Portal · Your documents</p>
+                    <h1 class="mt-1 text-2xl font-bold tracking-tight text-slate-900">${escapeHtml(`${patient.first_name} ${patient.last_name}`)}</h1>
+                    <p class="mt-1 text-sm text-slate-600">Patient ID #${Number(patient.patient_id)} · Date of birth ${escapeHtml(date(patient.birth_date))}</p></div>
                 <button id="patientPortalLogout" type="button" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Sign out</button>
             </div>
-            <div class="mb-6 grid gap-4 sm:grid-cols-3">
-                <article class="rounded-xl border border-slate-200 bg-white p-5"><p class="text-xs font-medium uppercase tracking-wide text-slate-500">Admissions</p><p class="mt-2 text-2xl font-bold text-slate-900">${data.admissions.length}</p></article>
-                <article class="rounded-xl border border-slate-200 bg-white p-5"><p class="text-xs font-medium uppercase tracking-wide text-slate-500">Billed</p><p class="mt-2 text-2xl font-bold text-blue-700">${money(data.statements.reduce((sum, statement) => sum + Number(statement.total_amount), 0))}</p></article>
-                <article class="rounded-xl border border-slate-200 bg-white p-5"><p class="text-xs font-medium uppercase tracking-wide text-slate-500">Outstanding balance</p><p class="mt-2 text-2xl font-bold text-amber-700">${money(data.statements.reduce((sum, statement) => sum + Number(statement.balance_amount), 0))}</p></article>
-            </div>
             <section class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                <div class="border-b border-slate-100 px-5 py-4"><h2 class="font-semibold text-slate-900">Billing statements</h2><p class="mt-1 text-xs text-slate-500">Amounts shown are for information and may not reflect pending adjustments.</p></div>
-                <div class="overflow-x-auto"><table class="min-w-full text-sm"><thead class="bg-slate-50 text-left text-xs font-medium uppercase text-slate-500"><tr>
+                <div class="border-b border-slate-100 px-5 py-4"><h2 class="font-semibold text-slate-900">Billing statements</h2><p class="mt-1 text-xs text-slate-500">Open a statement to view, print, or download your cashier-format Statement of Account.</p></div>
+                <div class="hidden overflow-x-auto md:block"><table class="min-w-full text-sm"><thead class="bg-slate-50 text-left text-xs font-medium uppercase text-slate-500"><tr>
                     <th class="px-4 py-3">Statement</th><th class="px-4 py-3">Date</th><th class="px-4 py-3">Status</th><th class="px-4 py-3 text-right">Total</th><th class="px-4 py-3 text-right">Paid</th><th class="px-4 py-3 text-right">Balance</th>
                     <th class="px-4 py-3 text-right">Statement of Account</th>
                 </tr></thead><tbody>${statementRows}</tbody></table></div>
+                <div class="divide-y divide-slate-100 md:hidden">${statementCards}</div>
             </section>
+            <h2 class="mb-3 text-lg font-semibold text-slate-900">Other available records</h2>
             <section class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                <div class="border-b border-slate-100 px-5 py-4"><h2 class="font-semibold text-slate-900">Recent charges</h2></div>
+                <div class="border-b border-slate-100 px-5 py-4"><h3 class="font-semibold text-slate-900">Admissions</h3></div>
                 <div class="overflow-x-auto"><table class="min-w-full text-sm"><thead class="bg-slate-50 text-left text-xs font-medium uppercase text-slate-500"><tr>
-                    <th class="px-4 py-3">Date</th><th class="px-4 py-3">Statement</th><th class="px-4 py-3">Item</th><th class="px-4 py-3 text-right">Qty</th><th class="px-4 py-3 text-right">Amount</th>
-                </tr></thead><tbody>${chargeRows}</tbody></table></div>
+                    <th class="px-4 py-3">Admission</th><th class="px-4 py-3">Reason</th><th class="px-4 py-3">Dates</th><th class="px-4 py-3">Status</th>
+                </tr></thead><tbody>${admissions}</tbody></table></div>
             </section>
             <div class="grid gap-6 lg:grid-cols-2">
-                <section class="rounded-xl border border-slate-200 bg-white p-5"><h2 class="font-semibold text-slate-900">Medical history</h2>
+                <section class="rounded-xl border border-slate-200 bg-white p-5"><h3 class="font-semibold text-slate-900">Medical history and diagnoses</h3>
                     <p class="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">${escapeHtml(patient.medical_history || 'No medical history recorded.')}</p>
-                    <h3 class="mt-6 border-t border-slate-100 pt-5 font-semibold text-slate-900">Diagnoses</h3>
-                    <ul class="mt-3 divide-y divide-slate-100">${diagnoses}</ul>
+                    <ul class="mt-3 divide-y divide-slate-100 border-t border-slate-100">${diagnoses}</ul>
                 </section>
-                <div class="space-y-6">
-                    <section class="rounded-xl border border-slate-200 bg-white p-5"><h2 class="font-semibold text-slate-900">Admissions</h2><div class="mt-3 space-y-3">${admissions}</div></section>
-                    <section class="rounded-xl border border-slate-200 bg-white p-5"><h2 class="font-semibold text-slate-900">Consultations</h2><ul class="mt-3 divide-y divide-slate-100">${consultations}</ul></section>
-                </div>
+                <section class="rounded-xl border border-slate-200 bg-white p-5"><h3 class="font-semibold text-slate-900">Consultations</h3><ul class="mt-3 divide-y divide-slate-100">${consultations}</ul></section>
             </div>
             <p class="mt-6 text-center text-xs text-slate-500">This portal session automatically ends after five minutes without activity.</p>`;
 
@@ -189,7 +195,7 @@
     function showLogin() {
         clearTimeout(idleTimer);
         document.body.dataset.authenticated = '0';
-        dashboardSection.classList.add('hidden');
+        recordsSection.classList.add('hidden');
         loginSection.classList.remove('hidden');
         content.classList.add('hidden');
         loginForm.reset();
@@ -197,10 +203,10 @@
         refreshCaptcha().catch(error => showLoginError(error.message));
     }
 
-    async function loadDashboard() {
+    async function loadPatientRecords() {
         try {
-            const result = await request('dashboard');
-            renderDashboard(result.data);
+            const result = await request('records');
+            renderPatientRecords(result.data);
             document.body.dataset.authenticated = '1';
             recordActivity();
         } catch (error) {
@@ -209,12 +215,16 @@
                 return;
             }
             loading.innerHTML = `<p class="text-rose-700">${escapeHtml(error.message)}</p><button id="patientPortalRetry" type="button" class="mt-3 rounded-lg border px-3 py-2 text-sm">Try again</button>`;
-            document.getElementById('patientPortalRetry').addEventListener('click', loadDashboard);
+            document.getElementById('patientPortalRetry').addEventListener('click', loadPatientRecords);
         }
     }
 
     loginForm.addEventListener('submit', async event => {
         event.preventDefault();
+        if (!captchaReady) {
+            showLoginError('Please wait for the security question to load, then try again.');
+            return;
+        }
         loginError.classList.add('hidden');
         loginButton.disabled = true;
         loginButton.textContent = 'Signing in…';
@@ -225,10 +235,10 @@
             });
             document.body.dataset.authenticated = '1';
             loginSection.classList.add('hidden');
-            dashboardSection.classList.remove('hidden');
+            recordsSection.classList.remove('hidden');
             loading.classList.remove('hidden');
             content.classList.add('hidden');
-            await loadDashboard();
+            await loadPatientRecords();
             if (document.body.dataset.authenticated === '1') {
                 await Swal.fire({ icon: 'success', title: 'Signed in', toast: true, position: 'top-end', timer: 1800, showConfirmButton: false });
             }
@@ -237,7 +247,7 @@
             captchaAnswer.value = '';
             await refreshCaptcha().catch(refreshError => showLoginError(refreshError.message));
         } finally {
-            loginButton.disabled = false;
+            loginButton.disabled = !captchaReady;
             loginButton.textContent = 'Sign in securely';
         }
     });
@@ -258,5 +268,5 @@
     }, 60000);
 
     refreshCaptcha().catch(error => showLoginError(error.message));
-    if (document.body.dataset.authenticated === '1') loadDashboard();
+    if (document.body.dataset.authenticated === '1') loadPatientRecords();
 })();

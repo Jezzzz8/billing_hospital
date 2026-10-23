@@ -1,8 +1,6 @@
 
 
 document.addEventListener("DOMContentLoaded", () => {
-  console.log("🔵 login.js loaded");
-
   const form = document.getElementById("loginForm");
   const emailEl = document.getElementById("email");
   const passwordEl = document.getElementById("password");
@@ -11,12 +9,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const spinner = document.getElementById("spinner");
   const alertBox = document.getElementById("alert");
   const togglePass = document.getElementById("togglePassword");
+  const expectedRoleId = Number(document.getElementById("expectedRoleId")?.value || 0);
 
   const baseUrl = document.body.dataset.baseUrl || "";
-  const API_URL = baseUrl + "/api/login.php";
-
-  console.log("🔵 baseUrl:", JSON.stringify(baseUrl));
-  console.log("🔵 API_URL:", API_URL);
+  const API_URL = baseUrl + "/api/login.php?expected_role_id=" + encodeURIComponent(expectedRoleId);
 
   function showAlert(message, type = "error") {
     const styles = {
@@ -72,17 +68,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const payload = {
       email: emailEl.value.trim(),
       password: passwordEl.value,
+      expected_role_id: expectedRoleId,
     };
-
-    console.log("🟢 Payload:", payload);
 
     try {
       const res = await axios.post(API_URL, payload, {
         headers: { "Content-Type": "application/json" },
         withCredentials: true,
       });
-
-      console.log("🟢 Response:", res.status, res.data);
 
       if (res.data.success) {
         showAlert(
@@ -102,11 +95,6 @@ document.addEventListener("DOMContentLoaded", () => {
         (err.code === "ERR_NETWORK"
           ? "Network error. Is the server running?"
           : "Login failed. Please try again.");
-      console.error(
-        "❌",
-        err.response?.status,
-        err.response?.data || err.message,
-      );
       showAlert(msg, "error");
       setLoading(false);
     }

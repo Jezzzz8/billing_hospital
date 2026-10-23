@@ -124,10 +124,15 @@ try {
             break;
 
         case 'add-charge':
+            if ($roleId !== 1) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'Cashiers cannot add charges.']);
+                break;
+            }
             $id = (int)($input['statement_id'] ?? $_GET['statement_id'] ?? 0);
             try {
                 $controller->addCharge($id, $input);
-                ws_broadcast('billing.charge.added', ['statement_id' => $id], [1, 4]);
+                ws_broadcast('billing.charge.added', ['statement_id' => $id], [1]);
                 echo json_encode(['success' => true, 'message' => 'Charge added.', 'data' => null]);
             } catch (Throwable $e) {
                 http_response_code(422);
